@@ -14,11 +14,12 @@ import (
 	"go.uber.org/zap"
 )
 
-func testServer(c LoanFetcher, now func() time.Time) http.Handler {
+func testServer(c Fetcher, now func() time.Time) http.Handler {
 	s := &Server{
-		Log:    zap.NewNop().Sugar(),
-		Client: c,
-		Now:    now,
+		Log:            zap.NewNop().Sugar(),
+		Client:         c,
+		DebtCategories: parseDebtCategories(""),
+		Now:            now,
 	}
 	return router(s, http.NotFoundHandler())
 }
@@ -38,7 +39,7 @@ func TestHandleLoansReturnsJSON(t *testing.T) {
 	}
 	h := testServer(c, fixedNow(testNow))
 
-	for _, path := range []string{"/", "/loans"} {
+	for _, path := range []string{"/loans"} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil))
 
@@ -70,7 +71,7 @@ func TestMonthlyPaymentSerializesAsNull(t *testing.T) {
 	h := testServer(c, fixedNow(testNow))
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/loans", nil))
 
 	body := w.Body.String()
 	if !strings.Contains(body, `"monthly_payment": null`) && !strings.Contains(body, `"monthly_payment":null`) {
@@ -97,7 +98,7 @@ func TestUpstreamFailureIsBadGateway(t *testing.T) {
 	h := testServer(c, fixedNow(testNow))
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/loans", nil))
 
 	if w.Code != http.StatusBadGateway {
 		t.Errorf("status = %d, want 502", w.Code)
@@ -112,7 +113,7 @@ func TestBadQueryParamIsBadRequest(t *testing.T) {
 	h := testServer(&fakeClient{}, fixedNow(testNow))
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/?include_credit=yes-please", nil))
+	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/loans?include_credit=yes-please", nil))
 
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400; body %s", w.Code, w.Body.String())
@@ -131,10 +132,10 @@ func TestIncludeCreditQueryParam(t *testing.T) {
 		query string
 		want  int
 	}{
-		{"/", 0},
-		{"/?include_credit=true", 1},
-		{"/?include_credit=1", 1},
-		{"/?include_credit=false", 0},
+		{"/loans", 0},
+		{"/loans?include_credit=true", 1},
+		{"/loans?include_credit=1", 1},
+		{"/loans?include_credit=false", 0},
 	} {
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, tt.query, nil))
@@ -155,7 +156,7 @@ func TestCacheAvoidsRefetch(t *testing.T) {
 
 	for range 3 {
 		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+		h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/loans", nil))
 		if w.Code != http.StatusOK {
 			t.Fatalf("status = %d", w.Code)
 		}
@@ -172,9 +173,9 @@ func TestCacheExpires(t *testing.T) {
 	s := &Server{Log: zap.NewNop().Sugar(), Client: c, Now: func() time.Time { return now }}
 	h := router(s, http.NotFoundHandler())
 
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/loans", nil))
 	now = now.Add(cacheTTL + time.Second)
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/loans", nil))
 
 	if c.assetCalls != 2 {
 		t.Errorf("asset calls = %d, want 2 after TTL expiry", c.assetCalls)
@@ -185,8 +186,8 @@ func TestCacheIsKeyedByOptions(t *testing.T) {
 	c := &countingClient{}
 	h := testServer(c, fixedNow(testNow))
 
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/?include_credit=true", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/loans", nil))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/loans?include_credit=true", nil))
 
 	if c.assetCalls != 2 {
 		t.Errorf("asset calls = %d, want 2; different options must not share a cache entry", c.assetCalls)
@@ -224,6 +225,10 @@ func (c *countingClient) GetAssets(_ context.Context) ([]*lunchmoney.Asset, erro
 }
 
 func (c *countingClient) GetPlaidAccounts(_ context.Context) ([]*lunchmoney.PlaidAccount, error) {
+	return nil, nil
+}
+
+func (c *countingClient) GetBudgets(_ context.Context, _ *lunchmoney.BudgetFilters) ([]*lunchmoney.Budget, error) {
 	return nil, nil
 }
 
