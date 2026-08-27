@@ -53,11 +53,11 @@ $ curl -s https://newyork.welch.io/acntng/ | jq
 
 ## How the numbers are derived
 
-**Loans** are assets with `type_name: loan` plus Plaid accounts with `type: loan`. Closed and inactive accounts are dropped. Credit cards are excluded by default — revolving credit isn't a loan — as are `other liability` assets; both opt in via query param.
+**Loans** are assets typed `loan` plus Plaid accounts typed `loan`; closed and inactive are dropped. Credit cards are excluded by default (revolving credit isn't a loan), as are `other liability` assets. Both opt in by query param.
 
-**Balances** are the amount owed, positive, as Lunch Money reports them. Not negated into a net-worth convention. Each loan carries a parsed `balance` and the API's original `balance_raw`.
+**Balances** are the amount owed, positive, as Lunch Money reports them — not negated into a net-worth convention. Each loan carries a parsed `balance` and the original `balance_raw`.
 
-**Monthly payments are derived, not reported** — the API has no such field. `payment_source` says how each was found:
+**Monthly payments are derived** — the API has no such field. `payment_source` says how each was found:
 
 | `payment_source` | Meaning |
 | --- | --- |
@@ -66,11 +66,9 @@ $ curl -s https://newyork.welch.io/acntng/ | jq
 | `override` | From `ACNTNG_PAYMENT_OVERRIDES`. |
 | `none` | Nothing matched; `monthly_payment` is `null`. |
 
-The payee heuristic carries most of the weight: a loan payment is usually booked against the checking account it's paid *from*, not the loan. When nothing matches, `monthly_payment` is `null` rather than `0` so an unknown is distinguishable from a real zero, and `totals.loans_missing_payment` counts them.
+The payee heuristic does most of the work, since a payment is usually booked against the checking account it's paid *from*. When nothing matches, `monthly_payment` is `null` rather than `0`, and `totals.loans_missing_payment` counts them.
 
-Cadences normalize to a monthly figure (`weekly` × 52/12, `every 2 weeks` × 26/12, `every 3 months` ÷ 3, and so on). `once` is skipped. One expense is credited to a single loan — its most specific name match — since crediting every match would double the total; an exact tie is reported in `notes` instead.
-
-Mixed-currency totals are a raw sum with no conversion, and say so in `notes`.
+Cadences normalize to monthly (`weekly` × 52/12, `every 2 weeks` × 26/12, `every 3 months` ÷ 3, …); `once` is skipped. One expense credits one loan, its most specific name match — crediting every match would double the total. Ties land in `notes`, as do mixed-currency totals, which are an unconverted raw sum.
 
 ## Configuration
 
@@ -86,7 +84,7 @@ Reports are cached five minutes; the API is rate limited.
 
 ## Why a shared key as well as the portal
 
-The portal protects the *public* route, but the container also sits on mist's shared `caddy` network with ~40 siblings that can reach `acntng:8080` by name and skip it — including `hoarder`, which crawls user-submitted URLs through a `chrome` listening on `0.0.0.0:9222`. The portal's injected `X-WEBAUTH-USER` is forgeable by anything that reaches the port, so Caddy injects a secret instead. `/healthz` and `/metrics` are exempt; neither exposes account data.
+The portal protects the *public* route, but ~40 siblings on mist's shared `caddy` network reach `acntng:8080` directly — including `hoarder`, which crawls user-submitted URLs through a `chrome` on `0.0.0.0:9222`. The portal's `X-WEBAUTH-USER` is forgeable by anything reaching the port, so Caddy injects a secret instead. `/healthz` and `/metrics` are exempt; neither exposes account data.
 
 ## Deployment
 
