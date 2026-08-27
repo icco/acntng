@@ -36,19 +36,25 @@ const serverName = "acntng"
 const cacheTTL = 5 * time.Minute
 
 func main() {
+	// main itself holds no defers, so the deferred logger flush and metric
+	// shutdown in run() are guaranteed to happen before the process exits.
+	os.Exit(run())
+}
+
+func run() int {
 	log := logging.Must(logging.NewLogger(serverName))
 	defer logging.Sync(log)
 
 	token := os.Getenv("LUNCHMONEY_TOKEN")
 	if token == "" {
 		log.Errorw("LUNCHMONEY_TOKEN is required")
-		os.Exit(1)
+		return 1
 	}
 
 	lm, err := lunchmoney.NewClient(token)
 	if err != nil {
 		log.Errorw("could not create lunchmoney client", zap.Error(err))
-		os.Exit(1)
+		return 1
 	}
 
 	// On mist this container shares a docker network with ~40 siblings that
@@ -58,7 +64,7 @@ func main() {
 	if sharedKey == "" {
 		if os.Getenv("NAT_ENV") == "production" {
 			log.Errorw("ACNTNG_SHARED_KEY is required when NAT_ENV=production")
-			os.Exit(1)
+			return 1
 		}
 		log.Warnw("ACNTNG_SHARED_KEY is unset; report routes are unauthenticated")
 	}
@@ -66,7 +72,7 @@ func main() {
 	overrides, err := parseOverrides(os.Getenv("ACNTNG_PAYMENT_OVERRIDES"))
 	if err != nil {
 		log.Errorw("could not parse ACNTNG_PAYMENT_OVERRIDES", zap.Error(err))
-		os.Exit(1)
+		return 1
 	}
 	if len(overrides) > 0 {
 		log.Infow("loaded payment overrides", "count", len(overrides))
@@ -81,7 +87,7 @@ func main() {
 	exporter, err := otelprom.New(otelprom.WithRegisterer(registry))
 	if err != nil {
 		log.Errorw("otel prometheus exporter", zap.Error(err))
-		os.Exit(1)
+		return 1
 	}
 	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(exporter))
 	otel.SetMeterProvider(mp)
@@ -125,9 +131,11 @@ func main() {
 	log.Infow("starting server", "port", port)
 	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Errorw("server error", zap.Error(err))
-		os.Exit(1)
+		return 1
 	}
 	<-idle
+
+	return 0
 }
 
 // Server holds the request-scoped dependencies for the HTTP handlers.
