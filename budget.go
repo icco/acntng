@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"math"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -12,17 +11,21 @@ import (
 	"github.com/icco/lunchmoney"
 )
 
-// defaultDebtCategories splits debt service out of everyday spending. Lunch
-// Money has no notion of "this category is a debt", so the split is by name.
-// Override with ACNTNG_DEBT_CATEGORIES.
-var defaultDebtCategories = []string{
-	"mortgage",
-	"student loans",
-	"auto loan",
-	"personal loans",
-	"buy now pay later",
-	"loan payments",
-	"credit card payments",
+// debtCategories splits debt service out of everyday spending. Lunch Money has
+// no notion of "this category is a debt", so the split is by name.
+var debtCategories = map[string]bool{
+	"mortgage":             true,
+	"student loans":        true,
+	"auto loan":            true,
+	"personal loans":       true,
+	"buy now pay later":    true,
+	"loan payments":        true,
+	"credit card payments": true,
+}
+
+// isDebt reports whether a category name counts as debt service.
+func isDebt(name string) bool {
+	return debtCategories[strings.ToLower(strings.TrimSpace(name))]
 }
 
 // IncomeBasis says which income figure the surplus was computed against.
@@ -109,23 +112,6 @@ type BudgetFetcher interface {
 	GetBudgets(ctx context.Context, filters *lunchmoney.BudgetFilters) ([]*lunchmoney.Budget, error)
 }
 
-// parseDebtCategories reads ACNTNG_DEBT_CATEGORIES: a comma-separated list of
-// category names to count as debt service. Empty falls back to the defaults.
-func parseDebtCategories(s string) map[string]bool {
-	names := defaultDebtCategories
-	if strings.TrimSpace(s) != "" {
-		names = strings.Split(s, ",")
-	}
-
-	out := map[string]bool{}
-	for _, n := range names {
-		if n = strings.ToLower(strings.TrimSpace(n)); n != "" {
-			out[n] = true
-		}
-	}
-	return out
-}
-
 // monthStart truncates to the first of the month, which is the only budget
 // period start Lunch Money accepts for a monthly budget.
 func monthStart(t time.Time) time.Time {
@@ -133,16 +119,7 @@ func monthStart(t time.Time) time.Time {
 }
 
 // BuildBudgetReport assembles the budget report for the month containing now.
-//
-// A nil debt map falls back to the defaults: a caller that forgot to set it
-// would otherwise file every loan payment under everyday living, which is the
-// one distinction this report exists to make. An empty-but-non-nil map is a
-// deliberate "classify nothing as debt" and is honoured.
-func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time, debt map[string]bool) (*BudgetReport, error) {
-	if debt == nil {
-		debt = parseDebtCategories("")
-	}
-
+func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time) (*BudgetReport, error) {
 	start := monthStart(at)
 	end := start.AddDate(0, 1, -1)
 	month := start.Format("2006-01-02")
@@ -186,7 +163,7 @@ func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time, debt 
 			currencies[strings.ToUpper(data.BudgetCurrency)] = true
 		}
 
-		line := lineFrom(b, data, debt)
+		line := lineFrom(b, data)
 
 		// A category with neither a budget nor activity is noise.
 		if line.Budgeted == 0 && line.Spent == 0 && line.Transactions == 0 {
@@ -229,13 +206,13 @@ func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time, debt 
 }
 
 // lineFrom converts one Lunch Money budget row into a report line.
-func lineFrom(b *lunchmoney.Budget, data *lunchmoney.BudgetData, debt map[string]bool) BudgetLine {
+func lineFrom(b *lunchmoney.Budget, data *lunchmoney.BudgetData) BudgetLine {
 	line := BudgetLine{
 		CategoryID:   b.CategoryID,
 		Name:         b.CategoryName,
 		GroupName:    b.CategoryGroupName,
 		IsIncome:     b.IsIncome,
-		IsDebt:       debt[strings.ToLower(strings.TrimSpace(b.CategoryName))],
+		IsDebt:       isDebt(b.CategoryName),
 		Budgeted:     round2(budgetAmount(data)),
 		Transactions: data.NumTransactions,
 	}
@@ -348,9 +325,4 @@ func summarizeBudget(rep *BudgetReport, currencies map[string]bool) {
 			"budgets span multiple currencies (%s); totals are a raw sum and not converted",
 			strings.Join(list, ", ")))
 	}
-}
-
-// debtCategoriesFromEnv is the process-wide debt classification.
-func debtCategoriesFromEnv() map[string]bool {
-	return parseDebtCategories(os.Getenv("ACNTNG_DEBT_CATEGORIES"))
 }

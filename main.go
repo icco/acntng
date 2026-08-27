@@ -98,12 +98,11 @@ func run() int {
 	srv := &http.Server{
 		Addr: ":" + port,
 		Handler: router(&Server{
-			Log:            log,
-			Client:         lm,
-			Overrides:      overrides,
-			DebtCategories: debtCategoriesFromEnv(),
-			SharedKey:      sharedKey,
-			Now:            time.Now,
+			Log:       log,
+			Client:    lm,
+			Overrides: overrides,
+			SharedKey: sharedKey,
+			Now:       time.Now,
 		}, promhttp.HandlerFor(registry, promhttp.HandlerOpts{})),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
@@ -147,8 +146,6 @@ type Server struct {
 	Log       *zap.SugaredLogger
 	Client    Fetcher
 	Overrides map[string]float64
-	// DebtCategories names the budget categories that count as debt service.
-	DebtCategories map[string]bool
 	// SharedKey, when set, is required on report requests.
 	SharedKey string
 	// Now is injectable so tests can pin the reporting month.
@@ -191,7 +188,7 @@ func (s *Server) budgetReport(ctx context.Context, at, now time.Time) (*BudgetRe
 		return rep, nil
 	}
 
-	rep, err := BuildBudgetReport(ctx, s.Client, at, s.DebtCategories)
+	rep, err := BuildBudgetReport(ctx, s.Client, at)
 	if err != nil {
 		return nil, err
 	}

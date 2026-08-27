@@ -42,31 +42,21 @@ func asExcluded(b *lunchmoney.Budget) {
 	b.ExcludeFromBudget = true
 }
 
-func TestParseDebtCategories(t *testing.T) {
-	t.Run("defaults when unset", func(t *testing.T) {
-		got := parseDebtCategories("")
-		for _, want := range []string{"mortgage", "student loans", "buy now pay later"} {
-			if !got[want] {
-				t.Errorf("default set is missing %q", want)
-			}
+func TestIsDebt(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		want bool
+	}{
+		{"Mortgage", true},
+		{"student loans", true},
+		{"  Buy Now Pay Later  ", true},
+		{"Groceries", false},
+		{"", false},
+	} {
+		if got := isDebt(tt.name); got != tt.want {
+			t.Errorf("isDebt(%q) = %v, want %v", tt.name, got, tt.want)
 		}
-	})
-
-	t.Run("override replaces defaults", func(t *testing.T) {
-		got := parseDebtCategories(" Boat Loan , Airship Note ")
-		if !got["boat loan"] || !got["airship note"] {
-			t.Errorf("override not parsed: %v", got)
-		}
-		if got["mortgage"] {
-			t.Error("override should replace the defaults, not extend them")
-		}
-	})
-
-	t.Run("ignores empty entries", func(t *testing.T) {
-		if got := parseDebtCategories("a loan,,  ,"); len(got) != 1 {
-			t.Errorf("got %v, want just the one name", got)
-		}
-	})
+	}
 }
 
 func TestBuildBudgetReportClassifiesAndTotals(t *testing.T) {
@@ -78,7 +68,7 @@ func TestBuildBudgetReportClassifiesAndTotals(t *testing.T) {
 		budgetRow(5, "Restaurants and Delivery", 300, 450),
 	}}
 
-	rep, err := BuildBudgetReport(context.Background(), c, testNow, parseDebtCategories(""))
+	rep, err := BuildBudgetReport(context.Background(), c, testNow)
 	if err != nil {
 		t.Fatalf("BuildBudgetReport: %v", err)
 	}
@@ -132,7 +122,7 @@ func TestBuildBudgetReportSkipsNonSpending(t *testing.T) {
 		budgetRow(4, "Dormant", 0, 0),
 	}}
 
-	rep, err := BuildBudgetReport(context.Background(), c, testNow, parseDebtCategories(""))
+	rep, err := BuildBudgetReport(context.Background(), c, testNow)
 	if err != nil {
 		t.Fatalf("BuildBudgetReport: %v", err)
 	}
@@ -162,7 +152,7 @@ func TestBuildBudgetReportIncomeBasis(t *testing.T) {
 			budgetRow(2, "Groceries", 400, 100),
 		}}
 
-		rep, err := BuildBudgetReport(context.Background(), c, testNow, parseDebtCategories(""))
+		rep, err := BuildBudgetReport(context.Background(), c, testNow)
 		if err != nil {
 			t.Fatalf("BuildBudgetReport: %v", err)
 		}
@@ -190,7 +180,7 @@ func TestBuildBudgetReportIncomeBasis(t *testing.T) {
 			budgetRow(2, "Groceries", 400, 100),
 		}}
 
-		rep, err := BuildBudgetReport(context.Background(), c, testNow, parseDebtCategories(""))
+		rep, err := BuildBudgetReport(context.Background(), c, testNow)
 		if err != nil {
 			t.Fatalf("BuildBudgetReport: %v", err)
 		}
@@ -205,7 +195,7 @@ func TestBuildBudgetReportIncomeBasis(t *testing.T) {
 
 func TestBuildBudgetReportRequestsTheCurrentMonth(t *testing.T) {
 	c := &fakeClient{}
-	if _, err := BuildBudgetReport(context.Background(), c, testNow, nil); err != nil {
+	if _, err := BuildBudgetReport(context.Background(), c, testNow); err != nil {
 		t.Fatalf("BuildBudgetReport: %v", err)
 	}
 
@@ -222,7 +212,7 @@ func TestBuildBudgetReportRequestsTheCurrentMonth(t *testing.T) {
 
 func TestBuildBudgetReportPropagatesError(t *testing.T) {
 	c := &fakeClient{budgetsErr: errors.New("upstream is down")}
-	if _, err := BuildBudgetReport(context.Background(), c, testNow, nil); err == nil {
+	if _, err := BuildBudgetReport(context.Background(), c, testNow); err == nil {
 		t.Fatal("want an error when budgets cannot be read")
 	}
 }
@@ -235,7 +225,7 @@ func TestBudgetLinePctAndOver(t *testing.T) {
 		budgetRow(3, "Unbudgeted", 0, 75),
 	}}
 
-	rep, err := BuildBudgetReport(context.Background(), c, testNow, nil)
+	rep, err := BuildBudgetReport(context.Background(), c, testNow)
 	if err != nil {
 		t.Fatalf("BuildBudgetReport: %v", err)
 	}

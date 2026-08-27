@@ -16,10 +16,9 @@ import (
 
 func testServer(c Fetcher, now func() time.Time) http.Handler {
 	s := &Server{
-		Log:            zap.NewNop().Sugar(),
-		Client:         c,
-		DebtCategories: parseDebtCategories(""),
-		Now:            now,
+		Log:    zap.NewNop().Sugar(),
+		Client: c,
+		Now:    now,
 	}
 	return router(s, http.NotFoundHandler())
 }
