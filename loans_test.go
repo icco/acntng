@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -413,13 +414,124 @@ func TestMixedCurrencyIsFlagged(t *testing.T) {
 	}
 }
 
-func TestPayeeMatchIgnoresShortNames(t *testing.T) {
-	// A 3-character loan name must not substring-match unrelated payees.
+func TestPayeeMatchIgnoresShortStringsBothWays(t *testing.T) {
+	// A short loan name must not substring-match an unrelated payee...
 	l := &Loan{Name: "Car", Source: SourceAsset}
-	r := &lunchmoney.RecurringExpense{Payee: "Carwash Monthly"}
+	if got := payeeMatchScore(l, &lunchmoney.RecurringExpense{Payee: "Carwash Monthly"}); got != 0 {
+		t.Errorf("short loan name scored %d, want 0", got)
+	}
 
-	if payeeMatches(l, r) {
-		t.Error("a 3-character name should not payee-match")
+	// ...and neither must a short payee against a long loan name.
+	l = &Loan{Name: "Sallie Mae US Loan", Source: SourceAsset}
+	if got := payeeMatchScore(l, &lunchmoney.RecurringExpense{Payee: "US"}); got != 0 {
+		t.Errorf("short payee scored %d, want 0", got)
+	}
+}
+
+func TestPayeeMatchScorePrefersSpecificName(t *testing.T) {
+	r := &lunchmoney.RecurringExpense{Payee: "Wells Fargo"}
+
+	short := payeeMatchScore(&Loan{Name: "Wells Fargo", Source: SourceAsset}, r)
+	long := payeeMatchScore(&Loan{Name: "Wells Fargo Auto", Source: SourceAsset}, r)
+
+	if short == 0 || long == 0 {
+		t.Fatalf("both should match: short=%d long=%d", short, long)
+	}
+	if long <= short {
+		t.Errorf("longer name scored %d, want more than %d", long, short)
+	}
+}
+
+func TestPayeeMatchNotDoubleCounted(t *testing.T) {
+	// Two loans at one institution with a single recurring payee. Crediting
+	// both would double the reported monthly total.
+	c := &fakeClient{
+		assets: []*lunchmoney.Asset{
+			{ID: 1, TypeName: "loan", Name: "Wells Fargo Auto", Balance: "9000.0000", Currency: "usd", Status: "active"},
+			{ID: 2, TypeName: "loan", Name: "Wells Fargo Student", Balance: "22000.0000", Currency: "usd", Status: "active"},
+		},
+		recurring: []*lunchmoney.RecurringExpense{
+			{ID: 200, PlaidAccountID: 99, Payee: "Wells Fargo", Amount: "400.00", Currency: "usd", Cadence: "monthly"},
+		},
+	}
+
+	rep, err := BuildReport(context.Background(), c, testNow, Options{})
+	if err != nil {
+		t.Fatalf("BuildReport: %v", err)
+	}
+
+	if rep.Totals.MonthlyPayment != 400 {
+		t.Errorf("total monthly payment = %v, want 400 (counted once)", rep.Totals.MonthlyPayment)
+	}
+
+	withPayment := 0
+	for _, l := range rep.Loans {
+		if l.MonthlyPayment != nil {
+			withPayment++
+		}
+	}
+	if withPayment != 1 {
+		t.Errorf("%d loans got the payment, want exactly 1", withPayment)
+	}
+}
+
+func TestAmbiguousPayeeIsReportedNotGuessed(t *testing.T) {
+	// Two loans whose names match the payee equally well. Picking one at
+	// random would be a silent coin flip, so neither is credited.
+	c := &fakeClient{
+		assets: []*lunchmoney.Asset{
+			{ID: 1, TypeName: "loan", Name: "Wells Fargo", Balance: "9000.0000", Currency: "usd", Status: "active"},
+			{ID: 2, TypeName: "loan", Name: "Wells Fargo", Balance: "22000.0000", Currency: "usd", Status: "active"},
+		},
+		recurring: []*lunchmoney.RecurringExpense{
+			{ID: 201, PlaidAccountID: 99, Payee: "Wells Fargo", Amount: "400.00", Currency: "usd", Cadence: "monthly"},
+		},
+	}
+
+	rep, err := BuildReport(context.Background(), c, testNow, Options{})
+	if err != nil {
+		t.Fatalf("BuildReport: %v", err)
+	}
+
+	if rep.Totals.MonthlyPayment != 0 || rep.Totals.LoansMissingPayment != 2 {
+		t.Errorf("totals = %+v, want no payment assigned", rep.Totals)
+	}
+
+	var flagged bool
+	for _, n := range rep.Notes {
+		if strings.Contains(n, "more than one loan") {
+			flagged = true
+		}
+	}
+	if !flagged {
+		t.Errorf("want a note about the ambiguous payee, got %v", rep.Notes)
+	}
+}
+
+func TestAccountLinkBeatsPayeeMatch(t *testing.T) {
+	// An ID-linked expense is authoritative; a payee-matching expense must
+	// not also pile onto that loan.
+	c := &fakeClient{
+		assets: []*lunchmoney.Asset{
+			{ID: 1, TypeName: "loan", Name: "Chase Mortgage", Balance: "250000.0000", Currency: "usd", Status: "active"},
+		},
+		recurring: []*lunchmoney.RecurringExpense{
+			{ID: 202, AssetID: 1, Payee: "Chase", Amount: "1500.00", Currency: "usd", Cadence: "monthly"},
+			{ID: 203, PlaidAccountID: 99, Payee: "Chase Mortgage", Amount: "1500.00", Currency: "usd", Cadence: "monthly"},
+		},
+	}
+
+	rep, err := BuildReport(context.Background(), c, testNow, Options{})
+	if err != nil {
+		t.Fatalf("BuildReport: %v", err)
+	}
+
+	l := rep.Loans[0]
+	if l.PaymentSource != PaymentSourceAccountLink {
+		t.Errorf("payment source = %q, want %q", l.PaymentSource, PaymentSourceAccountLink)
+	}
+	if *l.MonthlyPayment != 1500 {
+		t.Errorf("monthly payment = %v, want 1500 (not doubled)", *l.MonthlyPayment)
 	}
 }
 

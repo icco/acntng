@@ -195,7 +195,7 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 		report.Loans = append(report.Loans, loanFromPlaid(p))
 	}
 
-	attachPayments(report.Loans, recurring, opts.Overrides)
+	report.Notes = append(report.Notes, attachPayments(report.Loans, recurring, opts.Overrides)...)
 
 	sort.Slice(report.Loans, func(i, j int) bool {
 		if report.Loans[i].Balance != report.Loans[j].Balance {
@@ -309,8 +309,11 @@ func monthlyFactor(cadence string) (float64, bool) {
 }
 
 // attachPayments derives each loan's monthly payment from recurring expenses,
-// then applies any configured overrides.
-func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, overrides map[string]float64) {
+// then applies any configured overrides. It returns notes about anything it
+// declined to guess at.
+func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, overrides map[string]float64) []string {
+	var notes []string
+
 	// A recurring expense linked to an account by ID is authoritative, so
 	// claim those first and keep them out of the fuzzier payee pass.
 	claimed := map[int64]bool{}
@@ -339,23 +342,57 @@ func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, over
 	// Loan payments are commonly booked against the checking account they are
 	// paid from rather than the loan, which leaves the ID link empty. Fall
 	// back to matching the recurring payee against the loan's name.
-	for i := range loans {
-		l := &loans[i]
-		if len(l.Payments) > 0 {
+	//
+	// This pass is driven by expense rather than by loan, because one payee can
+	// match several loans -- a payee of "Wells Fargo" is a substring of both
+	// "Wells Fargo Auto" and "Wells Fargo Student". Crediting the expense to
+	// every match would double-count it in the total, so each expense goes to
+	// its single best (most specific) match and a tie is reported instead of
+	// guessed.
+	for _, r := range recurring {
+		if r == nil || claimed[r.ID] {
 			continue
 		}
-		for _, r := range recurring {
-			if r == nil || claimed[r.ID] {
+		if _, ok := monthlyFactor(r.Cadence); !ok {
+			continue
+		}
+
+		best, bestScore, tied := -1, 0, false
+		for i := range loans {
+			// A loan with an authoritative ID-linked payment is settled.
+			if loans[i].PaymentSource == PaymentSourceAccountLink {
 				continue
 			}
-			if !payeeMatches(l, r) {
-				continue
+			score := payeeMatchScore(&loans[i], r)
+			switch {
+			case score == 0:
+			case score > bestScore:
+				best, bestScore, tied = i, score, false
+			case score == bestScore:
+				tied = true
 			}
-			factor, ok := monthlyFactor(r.Cadence)
-			if !ok {
-				continue
-			}
-			l.Payments = append(l.Payments, payment(r, factor, string(PaymentSourcePayeeMatch)))
+		}
+
+		if best < 0 {
+			continue
+		}
+		if tied {
+			notes = append(notes, fmt.Sprintf(
+				"recurring payee %q matches more than one loan equally well; left unassigned rather than guessed",
+				r.Payee))
+			continue
+		}
+
+		factor, _ := monthlyFactor(r.Cadence)
+		loans[best].Payments = append(loans[best].Payments,
+			payment(r, factor, string(PaymentSourcePayeeMatch)))
+		claimed[r.ID] = true
+	}
+
+	for i := range loans {
+		l := &loans[i]
+		if l.PaymentSource == PaymentSourceAccountLink {
+			continue
 		}
 		if len(l.Payments) > 0 {
 			l.PaymentSource = PaymentSourcePayeeMatch
@@ -384,6 +421,8 @@ func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, over
 		v := round2(total)
 		l.MonthlyPayment = &v
 	}
+
+	return notes
 }
 
 func payment(r *lunchmoney.RecurringExpense, factor float64, matchedBy string) Payment {
@@ -416,28 +455,39 @@ func accountLinked(l *Loan, r *lunchmoney.RecurringExpense) bool {
 	}
 }
 
-// payeeMatches reports whether a recurring expense's payee looks like it pays
-// this loan. It compares normalized names in both directions so "Sallie Mae"
-// matches a "Sallie Mae Student Loan" payee and vice versa.
-func payeeMatches(l *Loan, r *lunchmoney.RecurringExpense) bool {
+// minMatchLen is the shortest normalized string allowed to drive a payee
+// match. Short strings produce nonsense substring hits in either direction --
+// a loan named "Car" inside payee "Carwash", or a payee "US" inside a loan
+// named "Sallie Mae US Loan".
+const minMatchLen = 4
+
+// payeeMatchScore scores how well a recurring expense's payee looks like it
+// pays this loan, comparing normalized names in both directions so "Sallie
+// Mae" matches a "Sallie Mae Student Loan" payee and vice versa.
+//
+// The score is the length of the longest loan name that matched, so a caller
+// choosing between several candidate loans can prefer the most specific one.
+// Zero means no match.
+func payeeMatchScore(l *Loan, r *lunchmoney.RecurringExpense) int {
 	payee := normalize(r.Payee)
-	if payee == "" {
-		return false
+	if len(payee) < minMatchLen {
+		return 0
 	}
 
+	best := 0
 	for _, candidate := range []string{l.Name, l.DisplayName, l.InstitutionName} {
 		name := normalize(candidate)
-		// Short names produce nonsense substring hits ("bo" inside
-		// "bookstore"), so require enough signal to be meaningful.
-		if len(name) < 4 {
+		if len(name) < minMatchLen {
 			continue
 		}
 		if strings.Contains(payee, name) || strings.Contains(name, payee) {
-			return true
+			if len(name) > best {
+				best = len(name)
+			}
 		}
 	}
 
-	return false
+	return best
 }
 
 // normalize lowercases a name and strips everything but letters and digits so
