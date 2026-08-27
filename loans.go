@@ -327,8 +327,8 @@ func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, over
 
 	// Payments are usually booked against the checking account they are paid
 	// from, leaving the ID link empty, so fall back to payee names. Driven by
-	// expense, not loan: "Wells Fargo" matches both "Wells Fargo Auto" and
-	// "Wells Fargo Student", and crediting both would double the total.
+	// expense, not loan: "Northgate" matches both "Northgate Auto" and
+	// "Northgate Student", and crediting both would double the total.
 	for _, r := range recurring {
 		if r == nil || claimed[r.ID] {
 			continue
@@ -436,12 +436,12 @@ func accountLinked(l *Loan, r *lunchmoney.RecurringExpense) bool {
 }
 
 // minMatchLen guards both directions: "Car" hits payee "Carwash", and payee
-// "US" hits loan "Sallie Mae US Loan".
+// "US" hits loan "Meridian US Loan".
 const minMatchLen = 4
 
 // payeeMatchScore returns the length of the longest loan name matching this
 // payee, so a caller can prefer the most specific loan. Zero means no match.
-// Compares both directions: "Sallie Mae" vs "Sallie Mae Student Loan".
+// Compares both directions: "Meridian" vs "Meridian Student Loan".
 func payeeMatchScore(l *Loan, r *lunchmoney.RecurringExpense) int {
 	payee := normalize(r.Payee)
 	if len(payee) < minMatchLen {

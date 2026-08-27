@@ -158,7 +158,7 @@ func TestMonthlyPaymentFromAccountLink(t *testing.T) {
 			{ID: 1, TypeName: "loan", Name: "Car Loan", Balance: "9000.0000", Currency: "usd", Status: "active"},
 		},
 		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 100, AssetID: 1, Payee: "Toyota Financial", Amount: "450.00", Currency: "usd", Cadence: "monthly"},
+			{ID: 100, AssetID: 1, Payee: "Acme Motor Credit", Amount: "450.00", Currency: "usd", Cadence: "monthly"},
 		},
 	}
 
@@ -190,13 +190,13 @@ func TestMonthlyPaymentFromPayeeMatch(t *testing.T) {
 	// checking account it is paid from, not the loan.
 	c := &fakeClient{
 		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Sallie Mae", InstitutionName: "Sallie Mae", Balance: "22000.0000", Currency: "usd", Status: "active"},
+			{ID: 1, TypeName: "loan", Name: "Meridian", InstitutionName: "Meridian", Balance: "22000.0000", Currency: "usd", Status: "active"},
 		},
 		plaid: []*lunchmoney.PlaidAccount{
 			{ID: 50, Type: "depository", Name: "Checking", Balance: "1000.0000", Currency: "usd", Status: "active"},
 		},
 		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 101, PlaidAccountID: 50, Payee: "Sallie Mae Student Loan", Amount: "310.00", Currency: "usd", Cadence: "monthly"},
+			{ID: 101, PlaidAccountID: 50, Payee: "Meridian Student Loan", Amount: "310.00", Currency: "usd", Cadence: "monthly"},
 		},
 	}
 
@@ -423,17 +423,17 @@ func TestPayeeMatchIgnoresShortStringsBothWays(t *testing.T) {
 	}
 
 	// ...and neither must a short payee against a long loan name.
-	l = &Loan{Name: "Sallie Mae US Loan", Source: SourceAsset}
+	l = &Loan{Name: "Meridian US Loan", Source: SourceAsset}
 	if got := payeeMatchScore(l, &lunchmoney.RecurringExpense{Payee: "US"}); got != 0 {
 		t.Errorf("short payee scored %d, want 0", got)
 	}
 }
 
 func TestPayeeMatchScorePrefersSpecificName(t *testing.T) {
-	r := &lunchmoney.RecurringExpense{Payee: "Wells Fargo"}
+	r := &lunchmoney.RecurringExpense{Payee: "Northgate"}
 
-	short := payeeMatchScore(&Loan{Name: "Wells Fargo", Source: SourceAsset}, r)
-	long := payeeMatchScore(&Loan{Name: "Wells Fargo Auto", Source: SourceAsset}, r)
+	short := payeeMatchScore(&Loan{Name: "Northgate", Source: SourceAsset}, r)
+	long := payeeMatchScore(&Loan{Name: "Northgate Auto", Source: SourceAsset}, r)
 
 	if short == 0 || long == 0 {
 		t.Fatalf("both should match: short=%d long=%d", short, long)
@@ -448,11 +448,11 @@ func TestPayeeMatchNotDoubleCounted(t *testing.T) {
 	// both would double the reported monthly total.
 	c := &fakeClient{
 		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Wells Fargo Auto", Balance: "9000.0000", Currency: "usd", Status: "active"},
-			{ID: 2, TypeName: "loan", Name: "Wells Fargo Student", Balance: "22000.0000", Currency: "usd", Status: "active"},
+			{ID: 1, TypeName: "loan", Name: "Northgate Auto", Balance: "9000.0000", Currency: "usd", Status: "active"},
+			{ID: 2, TypeName: "loan", Name: "Northgate Student", Balance: "22000.0000", Currency: "usd", Status: "active"},
 		},
 		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 200, PlaidAccountID: 99, Payee: "Wells Fargo", Amount: "400.00", Currency: "usd", Cadence: "monthly"},
+			{ID: 200, PlaidAccountID: 99, Payee: "Northgate", Amount: "400.00", Currency: "usd", Cadence: "monthly"},
 		},
 	}
 
@@ -481,11 +481,11 @@ func TestAmbiguousPayeeIsReportedNotGuessed(t *testing.T) {
 	// random would be a silent coin flip, so neither is credited.
 	c := &fakeClient{
 		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Wells Fargo", Balance: "9000.0000", Currency: "usd", Status: "active"},
-			{ID: 2, TypeName: "loan", Name: "Wells Fargo", Balance: "22000.0000", Currency: "usd", Status: "active"},
+			{ID: 1, TypeName: "loan", Name: "Northgate", Balance: "9000.0000", Currency: "usd", Status: "active"},
+			{ID: 2, TypeName: "loan", Name: "Northgate", Balance: "22000.0000", Currency: "usd", Status: "active"},
 		},
 		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 201, PlaidAccountID: 99, Payee: "Wells Fargo", Amount: "400.00", Currency: "usd", Cadence: "monthly"},
+			{ID: 201, PlaidAccountID: 99, Payee: "Northgate", Amount: "400.00", Currency: "usd", Cadence: "monthly"},
 		},
 	}
 
@@ -514,11 +514,11 @@ func TestAccountLinkBeatsPayeeMatch(t *testing.T) {
 	// not also pile onto that loan.
 	c := &fakeClient{
 		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Chase Mortgage", Balance: "250000.0000", Currency: "usd", Status: "active"},
+			{ID: 1, TypeName: "loan", Name: "Harborview Mortgage", Balance: "250000.0000", Currency: "usd", Status: "active"},
 		},
 		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 202, AssetID: 1, Payee: "Chase", Amount: "1500.00", Currency: "usd", Cadence: "monthly"},
-			{ID: 203, PlaidAccountID: 99, Payee: "Chase Mortgage", Amount: "1500.00", Currency: "usd", Cadence: "monthly"},
+			{ID: 202, AssetID: 1, Payee: "Harborview", Amount: "1500.00", Currency: "usd", Cadence: "monthly"},
+			{ID: 203, PlaidAccountID: 99, Payee: "Harborview Mortgage", Amount: "1500.00", Currency: "usd", Cadence: "monthly"},
 		},
 	}
 
@@ -538,8 +538,8 @@ func TestAccountLinkBeatsPayeeMatch(t *testing.T) {
 
 func TestNormalize(t *testing.T) {
 	tests := []struct{ in, want string }{
-		{"Sallie Mae", "salliemae"},
-		{"Wells Fargo - Auto #1234", "wellsfargoauto1234"},
+		{"Meridian", "meridian"},
+		{"Northgate - Auto #1234", "northgateauto1234"},
 		{"", ""},
 	}
 	for _, tt := range tests {

@@ -26,26 +26,42 @@ $ curl -s https://newyork.welch.io/acntng/ | jq
   "currency": "USD",
   "totals": {
     "count": 2,
-    "balance": 411156.04,
-    "monthly_payment": 1500,
-    "loans_missing_payment": 1
+    "balance": 31000,
+    "monthly_payment": 1750,
+    "loans_missing_payment": 0
   },
   "loans": [
     {
-      "id": "plaid:465191",
+      "id": "plaid:1001",
       "source": "plaid",
-      "account_id": 465191,
-      "name": "MORTGAGE ...6776",
-      "institution_name": "Wells Fargo",
+      "account_id": 1001,
+      "name": "MORTGAGE ...0000",
+      "institution_name": "Example Bank",
       "type": "loan",
       "subtype": "mortgage",
       "status": "active",
       "currency": "USD",
-      "balance": 375796.38,
-      "balance_raw": "375796.3800",
+      "balance": 25000,
+      "balance_raw": "25000.0000",
       "balance_as_of": "2026-08-27T01:28:07Z",
       "monthly_payment": 1500,
       "payment_source": "override"
+    },
+    {
+      "id": "asset:2002",
+      "source": "asset",
+      "account_id": 2002,
+      "name": "Personal Loan",
+      "institution_name": "Example Credit Union",
+      "type": "loan",
+      "subtype": "consumer",
+      "status": "active",
+      "currency": "USD",
+      "balance": 6000,
+      "balance_raw": "6000.0000",
+      "balance_as_of": "2026-08-27T01:35:58Z",
+      "monthly_payment": 250,
+      "payment_source": "recurring_payee_match"
     }
   ]
 }
@@ -76,7 +92,7 @@ Cadences normalize to monthly (`weekly` × 52/12, `every 2 weeks` × 26/12, `eve
 | --- | --- | --- |
 | `LUNCHMONEY_TOKEN` | yes | From [developers.lunchmoney.app](https://developers.lunchmoney.app/). |
 | `ACNTNG_SHARED_KEY` | in production | Secret Caddy injects as `X-Acntng-Key`. Required on the report routes when set; the service refuses to start without it when `NAT_ENV=production`. |
-| `ACNTNG_PAYMENT_OVERRIDES` | no | JSON mapping a loan ID to its monthly payment, e.g. `{"plaid:465191": 1500}`. |
+| `ACNTNG_PAYMENT_OVERRIDES` | no | JSON mapping a loan ID to its monthly payment, e.g. `{"plaid:1001": 1500}`. |
 | `PORT` | no | Defaults to `8080`. |
 | `NAT_ENV` | no | `production` enables strict security headers and requires the shared key. |
 

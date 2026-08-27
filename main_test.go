@@ -33,7 +33,7 @@ func TestHandleLoansReturnsJSON(t *testing.T) {
 			{ID: 1, TypeName: "loan", Name: "Car Loan", Balance: "9000.0000", Currency: "usd", Status: "active"},
 		},
 		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 100, AssetID: 1, Payee: "Toyota", Amount: "450.00", Currency: "usd", Cadence: "monthly"},
+			{ID: 100, AssetID: 1, Payee: "Acme Motor Credit", Amount: "450.00", Currency: "usd", Cadence: "monthly"},
 		},
 	}
 	h := testServer(c, fixedNow(testNow))
