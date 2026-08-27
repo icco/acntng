@@ -25,23 +25,19 @@ const (
 	SourcePlaid Source = "plaid"
 )
 
-// PaymentSource says how a loan's monthly payment was determined. Lunch Money
-// has no "monthly payment" field, so every payment here is derived and the
-// caller needs to know how much to trust it.
+// PaymentSource says how a monthly payment was determined. Lunch Money has no
+// such field, so every payment is derived and the caller needs to know how
+// much to trust it.
 type PaymentSource string
 
 const (
-	// PaymentSourceAccountLink means a recurring expense pointed at this
-	// account by ID. This is the trustworthy case.
+	// PaymentSourceAccountLink is a recurring expense linked by ID. Reliable.
 	PaymentSourceAccountLink PaymentSource = "recurring_account_link"
-	// PaymentSourcePayeeMatch means a recurring expense was matched to this
-	// loan by payee name. Loan payments are usually booked against the
-	// checking account they are paid from rather than the loan itself, so
-	// this heuristic carries most of the matches -- and most of the risk.
+	// PaymentSourcePayeeMatch is a payee-name match. A heuristic.
 	PaymentSourcePayeeMatch PaymentSource = "recurring_payee_match"
-	// PaymentSourceOverride means the payment came from configuration.
+	// PaymentSourceOverride came from configuration.
 	PaymentSourceOverride PaymentSource = "override"
-	// PaymentSourceNone means nothing matched and monthly_payment is null.
+	// PaymentSourceNone means nothing matched; monthly_payment is null.
 	PaymentSourceNone PaymentSource = "none"
 )
 
@@ -66,10 +62,8 @@ type Payment struct {
 	MatchedBy     string  `json:"matched_by"`
 }
 
-// Loan is one debt with its balance and derived monthly payment.
-//
-// Balance is the amount owed, expressed positive, matching how Lunch Money
-// reports loan balances. It is not negated into a net-worth sign convention.
+// Loan is one debt. Balance is the amount owed, positive, as Lunch Money
+// reports it -- not negated into a net-worth convention.
 type Loan struct {
 	ID              string   `json:"id"`
 	Source          Source   `json:"source"`
@@ -85,8 +79,7 @@ type Loan struct {
 	BalanceRaw      string   `json:"balance_raw"`
 	BalanceAsOf     string   `json:"balance_as_of,omitempty"`
 	MonthlyPayment  *float64 `json:"monthly_payment"`
-	// PaymentSource is always set, so a null MonthlyPayment can be told apart
-	// from a genuine zero.
+	// Always set, so a null MonthlyPayment is distinguishable from a real zero.
 	PaymentSource PaymentSource `json:"payment_source"`
 	Payments      []Payment     `json:"payments,omitempty"`
 }
@@ -143,12 +136,9 @@ type LoanFetcher interface {
 	GetRecurringExpenses(ctx context.Context, filters *lunchmoney.RecurringExpenseFilters) ([]*lunchmoney.RecurringExpense, error)
 }
 
-// BuildReport fetches accounts and recurring expenses and assembles the loan
-// report.
-//
-// A failure to read recurring expenses is not fatal: balances are the primary
-// answer, so the report degrades to null payments and records the reason in
-// Notes rather than returning nothing.
+// BuildReport assembles the loan report. A recurring-expense failure is not
+// fatal: balances are the primary answer, so payments degrade to null and the
+// reason lands in Notes.
 func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options) (*Report, error) {
 	assets, err := c.GetAssets(ctx)
 	if err != nil {
@@ -162,13 +152,11 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 
 	report := &Report{GeneratedAt: now.UTC(), Loans: []Loan{}}
 
-	// Ask for recurring expenses as of the first of the current month, which
-	// is what the Lunch Money API expects to scope a recurring window.
-	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
-	recurring, err := c.GetRecurringExpenses(ctx, &lunchmoney.RecurringExpenseFilters{
-		StartDate:       month,
-		DebitAsNegative: false,
-	})
+	// nil filters, not an explicit start_date: the library's ToMap() marshals
+	// the struct to JSON then unmarshals into map[string]string, so its bool
+	// debit_as_negative always errors. The API defaults (current month, debits
+	// positive) are what we want anyway.
+	recurring, err := c.GetRecurringExpenses(ctx, nil)
 	if err != nil {
 		report.Notes = append(report.Notes,
 			fmt.Sprintf("recurring expenses unavailable, monthly payments not derived: %v", err))
@@ -209,9 +197,8 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 	return report, nil
 }
 
-// isClosed reports whether an account status means the debt is settled. Lunch
-// Money uses "closed" for assets and "inactive"/"relink" style values for
-// Plaid; only a definitively closed account is dropped.
+// isClosed reports whether the debt is settled. Only definitively closed
+// accounts are dropped.
 func isClosed(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "closed", "inactive":
@@ -265,9 +252,8 @@ func loanFromPlaid(p *lunchmoney.PlaidAccount) Loan {
 	return l
 }
 
-// parseAmount reads a Lunch Money decimal string. The library's ParseCurrency
-// helper is deliberately not used: it does int64(100*f), which truncates the
-// cents of a value like "12345.679".
+// parseAmount reads a Lunch Money decimal string. Not ParseCurrency: that does
+// int64(100*f) and truncates cents.
 func parseAmount(s string) float64 {
 	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 	if err != nil {
@@ -339,16 +325,10 @@ func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, over
 		}
 	}
 
-	// Loan payments are commonly booked against the checking account they are
-	// paid from rather than the loan, which leaves the ID link empty. Fall
-	// back to matching the recurring payee against the loan's name.
-	//
-	// This pass is driven by expense rather than by loan, because one payee can
-	// match several loans -- a payee of "Wells Fargo" is a substring of both
-	// "Wells Fargo Auto" and "Wells Fargo Student". Crediting the expense to
-	// every match would double-count it in the total, so each expense goes to
-	// its single best (most specific) match and a tie is reported instead of
-	// guessed.
+	// Payments are usually booked against the checking account they are paid
+	// from, leaving the ID link empty, so fall back to payee names. Driven by
+	// expense, not loan: "Wells Fargo" matches both "Wells Fargo Auto" and
+	// "Wells Fargo Student", and crediting both would double the total.
 	for _, r := range recurring {
 		if r == nil || claimed[r.ID] {
 			continue
@@ -455,19 +435,13 @@ func accountLinked(l *Loan, r *lunchmoney.RecurringExpense) bool {
 	}
 }
 
-// minMatchLen is the shortest normalized string allowed to drive a payee
-// match. Short strings produce nonsense substring hits in either direction --
-// a loan named "Car" inside payee "Carwash", or a payee "US" inside a loan
-// named "Sallie Mae US Loan".
+// minMatchLen guards both directions: "Car" hits payee "Carwash", and payee
+// "US" hits loan "Sallie Mae US Loan".
 const minMatchLen = 4
 
-// payeeMatchScore scores how well a recurring expense's payee looks like it
-// pays this loan, comparing normalized names in both directions so "Sallie
-// Mae" matches a "Sallie Mae Student Loan" payee and vice versa.
-//
-// The score is the length of the longest loan name that matched, so a caller
-// choosing between several candidate loans can prefer the most specific one.
-// Zero means no match.
+// payeeMatchScore returns the length of the longest loan name matching this
+// payee, so a caller can prefer the most specific loan. Zero means no match.
+// Compares both directions: "Sallie Mae" vs "Sallie Mae Student Loan".
 func payeeMatchScore(l *Loan, r *lunchmoney.RecurringExpense) int {
 	payee := normalize(r.Payee)
 	if len(payee) < minMatchLen {

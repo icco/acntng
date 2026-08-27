@@ -11,19 +11,13 @@ import (
 // sharedKeyHeader carries the secret Caddy injects on proxied requests.
 const sharedKeyHeader = "X-Acntng-Key"
 
-// requireSharedKey gates the report routes on a secret that only Caddy knows.
+// requireSharedKey gates the report routes on a secret only Caddy knows.
 //
-// The Caddy auth portal in front of this service protects the public route,
-// but the container also sits on mist's shared "caddy" docker network, where
-// roughly forty sibling containers can reach acntng:8080 by name and skip the
-// portal entirely. Two of those siblings make that reachable by an outsider:
-// hoarder crawls arbitrary user-submitted bookmark URLs, and it drives them
-// through a headless chrome whose DevTools port listens on 0.0.0.0:9222. A
-// bookmark of http://acntng:8080/ would archive this account's loan balances.
-//
-// Checking the identity headers the portal injects (X-WEBAUTH-USER and
-// friends) would not help: anything that can reach the port can forge them.
-// Only a secret the network cannot guess distinguishes Caddy from a sibling.
+// The portal protects the public route, but ~40 siblings on mist's shared
+// caddy network can reach acntng:8080 directly -- including hoarder, which
+// crawls user-submitted URLs through a chrome listening on 0.0.0.0:9222. The
+// portal's injected X-WEBAUTH-USER is forgeable by anything that reaches the
+// port, so only an unguessable secret distinguishes Caddy from a sibling.
 func requireSharedKey(key string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

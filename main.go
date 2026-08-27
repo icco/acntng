@@ -30,14 +30,13 @@ import (
 // serverName is the otelhttp span/metric scope.
 const serverName = "acntng"
 
-// cacheTTL is how long a built report is reused. The Lunch Money API is rate
-// limited and loan balances move at most daily, so a short cache keeps a
-// refresh-happy client from burning the quota.
+// cacheTTL bounds upstream calls; the API is rate limited and balances move at
+// most daily.
 const cacheTTL = 5 * time.Minute
 
 func main() {
-	// main itself holds no defers, so the deferred logger flush and metric
-	// shutdown in run() are guaranteed to happen before the process exits.
+	// main holds no defers, so run()'s deferred flush and shutdown are
+	// guaranteed to complete before exit.
 	os.Exit(run())
 }
 
@@ -57,9 +56,8 @@ func run() int {
 		return 1
 	}
 
-	// On mist this container shares a docker network with ~40 siblings that
-	// can reach it directly, bypassing the Caddy auth portal, so refuse to
-	// serve production traffic without the shared key.
+	// ~40 siblings on mist's shared network can reach this container directly,
+	// bypassing the portal, so fail closed in production.
 	sharedKey := os.Getenv("ACNTNG_SHARED_KEY")
 	if sharedKey == "" {
 		if os.Getenv("NAT_ENV") == "production" {
@@ -143,8 +141,7 @@ type Server struct {
 	Log       *zap.SugaredLogger
 	Client    LoanFetcher
 	Overrides map[string]float64
-	// SharedKey, when set, is required on report requests. See
-	// requireSharedKey for why the Caddy portal alone is not enough.
+	// SharedKey, when set, is required on report requests.
 	SharedKey string
 	// Now is injectable so tests can pin the reporting month.
 	Now func() time.Time
@@ -152,10 +149,9 @@ type Server struct {
 	cache cache
 }
 
-// parseOverrides reads the ACNTNG_PAYMENT_OVERRIDES env var, a JSON object
-// mapping a loan ID ("asset:12", "plaid:34") to its monthly payment. It exists
-// because a loan whose payment is not modeled as a recurring expense in Lunch
-// Money cannot be derived at all.
+// parseOverrides reads ACNTNG_PAYMENT_OVERRIDES, a JSON object mapping a loan
+// ID ("asset:12") to its monthly payment. For loans with no recurring expense
+// to derive from.
 func parseOverrides(s string) (map[string]float64, error) {
 	if s == "" {
 		return nil, nil
@@ -226,9 +222,9 @@ func (s *Server) handleLoans(w http.ResponseWriter, r *http.Request) {
 	render.JSON(log, w, http.StatusOK, rep)
 }
 
-// optionsFromRequest reads the query parameters that widen what counts as a
-// loan. Both default to false: a credit card is revolving debt rather than a
-// loan, and "other liability" is a catch-all.
+// optionsFromRequest reads the params that widen what counts as a loan. Both
+// default false: a credit card is revolving debt, and "other liability" is a
+// catch-all.
 func optionsFromRequest(r *http.Request) (Options, error) {
 	var opts Options
 

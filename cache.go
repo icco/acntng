@@ -5,11 +5,9 @@ import (
 	"time"
 )
 
-// cache memoizes built reports for cacheTTL, keyed by the options that shape
-// them. The Lunch Money API is rate limited, so repeated hits on this endpoint
-// should not each fan out into three upstream requests.
-//
-// The zero value is ready to use.
+// cache memoizes reports for cacheTTL, keyed by the options that shape them,
+// so repeated hits do not each fan out into three upstream requests. The zero
+// value is ready to use.
 type cache struct {
 	mu      sync.Mutex
 	entries map[string]cacheEntry
