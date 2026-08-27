@@ -178,10 +178,8 @@ func TestMonthlyPaymentFromAccountLink(t *testing.T) {
 		t.Errorf("missing = %d, want 0", rep.Totals.LoansMissingPayment)
 	}
 
-	// Filters must stay nil: the library's ToMap() cannot marshal its own bool
-	// field into map[string]string and always errors.
-	if c.gotFilters != nil {
-		t.Errorf("recurring filters = %+v, want nil", c.gotFilters)
+	if c.gotFilters == nil || c.gotFilters.StartDate != "2026-08-01" {
+		t.Errorf("recurring filters = %+v, want start_date 2026-08-01", c.gotFilters)
 	}
 }
 

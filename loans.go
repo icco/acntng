@@ -138,9 +138,11 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 
 	report := &Report{GeneratedAt: now.UTC(), Loans: []Loan{}}
 
-	// nil filters: the library's ToMap() always errors (icco/lunchmoney#24),
-	// and the API defaults are what we want anyway.
-	recurring, err := c.GetRecurringExpenses(ctx, nil)
+	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
+	recurring, err := c.GetRecurringExpenses(ctx, &lunchmoney.RecurringExpenseFilters{
+		StartDate:       month,
+		DebitAsNegative: false,
+	})
 	if err != nil {
 		report.Notes = append(report.Notes,
 			fmt.Sprintf("recurring expenses unavailable, monthly payments not derived: %v", err))
