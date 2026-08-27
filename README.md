@@ -95,10 +95,19 @@ Totals in a mixed-currency account are a raw sum with no conversion, and say so 
 | --- | --- | --- |
 | `LUNCHMONEY_TOKEN` | yes | Lunch Money API token, from [developers.lunchmoney.app](https://developers.lunchmoney.app/). |
 | `PORT` | no | Listen port. Defaults to `8080`. |
+| `ACNTNG_SHARED_KEY` | in production | Secret Caddy injects as `X-Acntng-Key`. Required on `/` and `/loans` when set. The service refuses to start without it when `NAT_ENV=production`. |
 | `ACNTNG_PAYMENT_OVERRIDES` | no | JSON object mapping a loan ID to its monthly payment, e.g. `{"asset:12": 450.50}`. For loans whose payment is not modeled as a recurring expense at all. |
-| `NAT_ENV` | no | Set to `production` in the container to enable the strict security headers. |
+| `NAT_ENV` | no | Set to `production` in the container to enable the strict security headers and require the shared key. |
 
 Reports are cached for five minutes; the Lunch Money API is rate limited and a balance moves at most daily.
+
+## Why there is a shared key as well as the portal
+
+The Caddy portal protects the *public* route, but the container also sits on mist's shared `caddy` docker network alongside ~40 siblings that can reach `acntng:8080` by name and skip the portal entirely. Two of those make it reachable by an outsider: `hoarder` crawls arbitrary user-submitted bookmark URLs, and drives them through a headless `chrome` whose DevTools port listens on `0.0.0.0:9222`. Bookmarking `http://acntng:8080/` would archive these loan balances.
+
+Checking the identity headers the portal injects (`X-WEBAUTH-USER` and friends) would not help — anything that can reach the port can forge them. Only a secret the network cannot guess distinguishes Caddy from a sibling, so Caddy injects `X-Acntng-Key` via `header_up` and this service requires it.
+
+`/healthz` and `/metrics` are exempt: the healthcheck and metrics scraper cannot supply the key, and neither exposes account data.
 
 ## Deployment
 
@@ -108,7 +117,7 @@ The container runs on `mist` and is reachable at `https://newyork.welch.io/acntn
 
 ```console
 $ export LUNCHMONEY_TOKEN=...
-$ task run
+$ task run  # no ACNTNG_SHARED_KEY needed outside production
 $ curl -s localhost:8080/ | jq
 ```
 

@@ -51,6 +51,18 @@ func main() {
 		os.Exit(1)
 	}
 
+	// On mist this container shares a docker network with ~40 siblings that
+	// can reach it directly, bypassing the Caddy auth portal, so refuse to
+	// serve production traffic without the shared key.
+	sharedKey := os.Getenv("ACNTNG_SHARED_KEY")
+	if sharedKey == "" {
+		if os.Getenv("NAT_ENV") == "production" {
+			log.Errorw("ACNTNG_SHARED_KEY is required when NAT_ENV=production")
+			os.Exit(1)
+		}
+		log.Warnw("ACNTNG_SHARED_KEY is unset; report routes are unauthenticated")
+	}
+
 	overrides, err := parseOverrides(os.Getenv("ACNTNG_PAYMENT_OVERRIDES"))
 	if err != nil {
 		log.Errorw("could not parse ACNTNG_PAYMENT_OVERRIDES", zap.Error(err))
@@ -87,6 +99,7 @@ func main() {
 			Log:       log,
 			Client:    lm,
 			Overrides: overrides,
+			SharedKey: sharedKey,
 			Now:       time.Now,
 		}, promhttp.HandlerFor(registry, promhttp.HandlerOpts{})),
 		ReadHeaderTimeout: 5 * time.Second,
@@ -122,6 +135,9 @@ type Server struct {
 	Log       *zap.SugaredLogger
 	Client    LoanFetcher
 	Overrides map[string]float64
+	// SharedKey, when set, is required on report requests. See
+	// requireSharedKey for why the Caddy portal alone is not enough.
+	SharedKey string
 	// Now is injectable so tests can pin the reporting month.
 	Now func() time.Time
 
@@ -158,8 +174,12 @@ func router(s *Server, metrics http.Handler) http.Handler {
 	r.Use(otelhttp.NewMiddleware(serverName))
 
 	r.Handle("/metrics", metrics)
-	r.Get("/", s.handleLoans)
-	r.Get("/loans", s.handleLoans)
+
+	r.Group(func(r chi.Router) {
+		r.Use(requireSharedKey(s.SharedKey))
+		r.Get("/", s.handleLoans)
+		r.Get("/loans", s.handleLoans)
+	})
 
 	return r
 }
