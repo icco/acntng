@@ -5,9 +5,8 @@ import (
 	"time"
 )
 
-// cache memoizes reports for cacheTTL, keyed by the options that shape them,
-// so repeated hits do not each fan out into three upstream requests. The zero
-// value is ready to use.
+// cache memoizes reports for cacheTTL, keyed by the options that shape them, so
+// repeated hits do not each fan out into three upstream calls. Zero value ready.
 type cache struct {
 	mu      sync.Mutex
 	entries map[string]cacheEntry
@@ -18,7 +17,7 @@ type cacheEntry struct {
 	stored time.Time
 }
 
-// get returns a cached report if one is present and still fresh as of now.
+// get returns a cached report if present and still fresh.
 func (c *cache) get(key string, now time.Time) (*Report, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

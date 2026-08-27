@@ -8,16 +8,14 @@ import (
 	"github.com/icco/gutil/render"
 )
 
-// sharedKeyHeader carries the secret Caddy injects on proxied requests.
 const sharedKeyHeader = "X-Acntng-Key"
 
 // requireSharedKey gates the report routes on a secret only Caddy knows.
 //
-// The portal protects the public route, but ~40 siblings on mist's shared
-// caddy network can reach acntng:8080 directly -- including hoarder, which
-// crawls user-submitted URLs through a chrome listening on 0.0.0.0:9222. The
-// portal's injected X-WEBAUTH-USER is forgeable by anything that reaches the
-// port, so only an unguessable secret distinguishes Caddy from a sibling.
+// The portal covers the public route, but ~40 siblings on mist's shared network
+// reach acntng:8080 directly -- including hoarder, which crawls user-submitted
+// URLs through a chrome on 0.0.0.0:9222. The portal's injected X-WEBAUTH-USER
+// is forgeable by anything reaching the port; an unguessable secret is not.
 func requireSharedKey(key string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

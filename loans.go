@@ -1,6 +1,4 @@
-// Package main implements acntng, a small JSON service that reports the loans
-// tracked in a Lunch Money account along with their balances and the monthly
-// payment servicing each one.
+// Command acntng reports Lunch Money loan balances and monthly payments as JSON.
 package main
 
 import (
@@ -15,38 +13,29 @@ import (
 	"github.com/icco/lunchmoney"
 )
 
-// Source says which Lunch Money collection a loan record came from.
+// Source says which Lunch Money collection a loan came from.
 type Source string
 
 const (
-	// SourceAsset is a manually managed Lunch Money asset.
 	SourceAsset Source = "asset"
-	// SourcePlaid is a bank-linked Plaid account.
 	SourcePlaid Source = "plaid"
 )
 
 // PaymentSource says how a monthly payment was determined. Lunch Money has no
-// such field, so every payment is derived and the caller needs to know how
-// much to trust it.
+// such field, so callers need to know how much to trust it.
 type PaymentSource string
 
 const (
-	// PaymentSourceAccountLink is a recurring expense linked by ID. Reliable.
+	// Linked by ID: reliable. Payee-matched: a heuristic.
 	PaymentSourceAccountLink PaymentSource = "recurring_account_link"
-	// PaymentSourcePayeeMatch is a payee-name match. A heuristic.
-	PaymentSourcePayeeMatch PaymentSource = "recurring_payee_match"
-	// PaymentSourceOverride came from configuration.
-	PaymentSourceOverride PaymentSource = "override"
-	// PaymentSourceNone means nothing matched; monthly_payment is null.
-	PaymentSourceNone PaymentSource = "none"
+	PaymentSourcePayeeMatch  PaymentSource = "recurring_payee_match"
+	PaymentSourceOverride    PaymentSource = "override"
+	PaymentSourceNone        PaymentSource = "none"
 )
 
-// loanTypes are the Lunch Money asset type_name / Plaid type values treated as
-// loans by default. Credit cards are revolving debt rather than loans and are
-// excluded unless explicitly requested.
+// Credit cards are revolving debt, so excluded unless asked for.
 var loanTypes = map[string]bool{"loan": true}
 
-// liabilityTypes are the extra types folded in when liabilities are requested.
 var liabilityTypes = map[string]bool{"other liability": true}
 
 // Payment is a single recurring expense attributed to a loan.
@@ -84,8 +73,8 @@ type Loan struct {
 	Payments      []Payment     `json:"payments,omitempty"`
 }
 
-// Totals aggregates the report. Balances in mixed currencies are summed only
-// when every loan shares one currency; see Report.Notes.
+// Totals aggregates the report. Mixed currencies are an unconverted sum; see
+// Report.Notes.
 type Totals struct {
 	Count               int     `json:"count"`
 	Balance             float64 `json:"balance"`
@@ -104,16 +93,13 @@ type Report struct {
 
 // Options controls which accounts count as loans.
 type Options struct {
-	// IncludeCredit folds in credit cards and other revolving credit.
-	IncludeCredit bool
-	// IncludeLiabilities folds in assets typed "other liability".
+	IncludeCredit      bool
 	IncludeLiabilities bool
-	// Overrides maps a loan ID ("asset:12") to a monthly payment, for loans
-	// whose payment cannot be derived from recurring expenses.
+	// Overrides maps a loan ID ("asset:12") to a monthly payment.
 	Overrides map[string]float64
 }
 
-// wantType reports whether a Lunch Money type name counts as a loan.
+// wantType reports whether a type name counts as a loan.
 func (o Options) wantType(t string) bool {
 	t = strings.ToLower(strings.TrimSpace(t))
 	if loanTypes[t] {
@@ -128,8 +114,8 @@ func (o Options) wantType(t string) bool {
 	return false
 }
 
-// LoanFetcher is the subset of the Lunch Money client acntng needs. It exists
-// so tests can supply canned data without an HTTP round trip.
+// LoanFetcher is the slice of the Lunch Money client acntng needs, so tests can
+// supply canned data.
 type LoanFetcher interface {
 	GetAssets(ctx context.Context) ([]*lunchmoney.Asset, error)
 	GetPlaidAccounts(ctx context.Context) ([]*lunchmoney.PlaidAccount, error)
@@ -152,10 +138,8 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 
 	report := &Report{GeneratedAt: now.UTC(), Loans: []Loan{}}
 
-	// nil filters, not an explicit start_date: the library's ToMap() marshals
-	// the struct to JSON then unmarshals into map[string]string, so its bool
-	// debit_as_negative always errors. The API defaults (current month, debits
-	// positive) are what we want anyway.
+	// nil filters: the library's ToMap() always errors (icco/lunchmoney#24),
+	// and the API defaults are what we want anyway.
 	recurring, err := c.GetRecurringExpenses(ctx, nil)
 	if err != nil {
 		report.Notes = append(report.Notes,
@@ -197,8 +181,7 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 	return report, nil
 }
 
-// isClosed reports whether the debt is settled. Only definitively closed
-// accounts are dropped.
+// isClosed reports whether the debt is settled.
 func isClosed(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "closed", "inactive":
@@ -252,8 +235,7 @@ func loanFromPlaid(p *lunchmoney.PlaidAccount) Loan {
 	return l
 }
 
-// parseAmount reads a Lunch Money decimal string. Not ParseCurrency: that does
-// int64(100*f) and truncates cents.
+// parseAmount reads a decimal string. Not ParseCurrency: it truncates cents.
 func parseAmount(s string) float64 {
 	f, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
 	if err != nil {
@@ -266,8 +248,8 @@ func round2(f float64) float64 {
 	return math.Round(f*100) / 100
 }
 
-// monthlyFactor converts a Lunch Money cadence into a per-month multiplier.
-// The bool is false for cadences that are not a recurring monthly obligation.
+// monthlyFactor converts a cadence to a per-month multiplier. False for
+// anything that is not a recurring monthly obligation.
 func monthlyFactor(cadence string) (float64, bool) {
 	switch strings.ToLower(strings.TrimSpace(cadence)) {
 	case "weekly":
@@ -289,19 +271,17 @@ func monthlyFactor(cadence string) (float64, bool) {
 	case "yearly", "annually":
 		return 1.0 / 12.0, true
 	default:
-		// "once" and anything unrecognized are not a monthly obligation.
+		// "once" and anything unrecognized.
 		return 0, false
 	}
 }
 
-// attachPayments derives each loan's monthly payment from recurring expenses,
-// then applies any configured overrides. It returns notes about anything it
-// declined to guess at.
+// attachPayments derives monthly payments, applies overrides, and returns notes
+// about anything it declined to guess at.
 func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, overrides map[string]float64) []string {
 	var notes []string
 
-	// A recurring expense linked to an account by ID is authoritative, so
-	// claim those first and keep them out of the fuzzier payee pass.
+	// ID-linked expenses are authoritative, so claim them before the payee pass.
 	claimed := map[int64]bool{}
 
 	for i := range loans {
@@ -325,10 +305,9 @@ func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, over
 		}
 	}
 
-	// Payments are usually booked against the checking account they are paid
-	// from, leaving the ID link empty, so fall back to payee names. Driven by
-	// expense, not loan: "Northgate" matches both "Northgate Auto" and
-	// "Northgate Student", and crediting both would double the total.
+	// Payments are usually booked against the account they are paid from, so
+	// fall back to payee names. Driven by expense, not loan: one payee can
+	// match two loans at an institution, and crediting both doubles the total.
 	for _, r := range recurring {
 		if r == nil || claimed[r.ID] {
 			continue
@@ -339,7 +318,6 @@ func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, over
 
 		best, bestScore, tied := -1, 0, false
 		for i := range loans {
-			// A loan with an authoritative ID-linked payment is settled.
 			if loans[i].PaymentSource == PaymentSourceAccountLink {
 				continue
 			}
@@ -406,9 +384,7 @@ func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, over
 }
 
 func payment(r *lunchmoney.RecurringExpense, factor float64, matchedBy string) Payment {
-	// Recurring expenses are requested with debit_as_negative=false, so a
-	// payment is positive. Take the magnitude anyway so a sign flip upstream
-	// cannot silently negate a total.
+	// Magnitude, so a sign flip upstream cannot silently negate a total.
 	amt := math.Abs(parseAmount(r.Amount))
 	return Payment{
 		ID:            r.ID,
@@ -423,7 +399,7 @@ func payment(r *lunchmoney.RecurringExpense, factor float64, matchedBy string) P
 	}
 }
 
-// accountLinked reports whether a recurring expense points at this loan by ID.
+// accountLinked reports whether an expense points at this loan by ID.
 func accountLinked(l *Loan, r *lunchmoney.RecurringExpense) bool {
 	switch l.Source {
 	case SourceAsset:
@@ -440,8 +416,7 @@ func accountLinked(l *Loan, r *lunchmoney.RecurringExpense) bool {
 const minMatchLen = 4
 
 // payeeMatchScore returns the length of the longest loan name matching this
-// payee, so a caller can prefer the most specific loan. Zero means no match.
-// Compares both directions: "Meridian" vs "Meridian Student Loan".
+// payee, so callers can prefer the most specific loan. Zero means no match.
 func payeeMatchScore(l *Loan, r *lunchmoney.RecurringExpense) int {
 	payee := normalize(r.Payee)
 	if len(payee) < minMatchLen {
@@ -464,8 +439,7 @@ func payeeMatchScore(l *Loan, r *lunchmoney.RecurringExpense) int {
 	return best
 }
 
-// normalize lowercases a name and strips everything but letters and digits so
-// punctuation and spacing differences do not defeat the comparison.
+// normalize strips case, punctuation and spacing before comparison.
 func normalize(s string) string {
 	var b strings.Builder
 	for _, r := range strings.ToLower(s) {
@@ -476,8 +450,7 @@ func normalize(s string) string {
 	return b.String()
 }
 
-// summarize fills in the report totals and flags anything that makes them
-// misleading.
+// summarize fills in totals and flags anything that makes them misleading.
 func summarize(rep *Report) {
 	currencies := map[string]bool{}
 	for _, l := range rep.Loans {

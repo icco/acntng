@@ -30,13 +30,11 @@ import (
 // serverName is the otelhttp span/metric scope.
 const serverName = "acntng"
 
-// cacheTTL bounds upstream calls; the API is rate limited and balances move at
-// most daily.
+// The API is rate limited and balances move at most daily.
 const cacheTTL = 5 * time.Minute
 
 func main() {
-	// main holds no defers, so run()'s deferred flush and shutdown are
-	// guaranteed to complete before exit.
+	// No defers here, so run()'s deferred flush and shutdown always complete.
 	os.Exit(run())
 }
 
@@ -56,8 +54,8 @@ func run() int {
 		return 1
 	}
 
-	// ~40 siblings on mist's shared network can reach this container directly,
-	// bypassing the portal, so fail closed in production.
+	// Siblings on mist's shared network reach this container directly, so fail
+	// closed in production. See requireSharedKey.
 	sharedKey := os.Getenv("ACNTNG_SHARED_KEY")
 	if sharedKey == "" {
 		if os.Getenv("NAT_ENV") == "production" {
@@ -149,9 +147,8 @@ type Server struct {
 	cache cache
 }
 
-// parseOverrides reads ACNTNG_PAYMENT_OVERRIDES, a JSON object mapping a loan
-// ID ("asset:12") to its monthly payment. For loans with no recurring expense
-// to derive from.
+// parseOverrides reads ACNTNG_PAYMENT_OVERRIDES: a JSON object mapping a loan
+// ID ("asset:12") to its monthly payment.
 func parseOverrides(s string) (map[string]float64, error) {
 	if s == "" {
 		return nil, nil
@@ -222,9 +219,7 @@ func (s *Server) handleLoans(w http.ResponseWriter, r *http.Request) {
 	render.JSON(log, w, http.StatusOK, rep)
 }
 
-// optionsFromRequest reads the params that widen what counts as a loan. Both
-// default false: a credit card is revolving debt, and "other liability" is a
-// catch-all.
+// optionsFromRequest reads the params that widen what counts as a loan.
 func optionsFromRequest(r *http.Request) (Options, error) {
 	var opts Options
 
