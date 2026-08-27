@@ -1,0 +1,40 @@
+version: "3"
+tasks:
+  default:
+    desc: Build, vet and test
+    deps:
+      - build
+      - vet
+      - test
+  build:
+    desc: Build the server
+    cmds:
+      - go build -o acntng .
+  test:
+    desc: Run the tests
+    cmds:
+      - go test -race ./...
+  vet:
+    desc: Run go vet
+    cmds:
+      - go vet ./...
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run
+  fmt:
+    desc: Format the code
+    cmds:
+      - gofmt -w .
+  tidy:
+    desc: Tidy go.mod
+    cmds:
+      - go mod tidy
+  run:
+    desc: Run the server locally on port 8080
+    cmds:
+      - go run .
+  docker:
+    desc: Build the container image
+    cmds:
+      - docker build -t ghcr.io/icco/acntng:local .
