@@ -2,7 +2,10 @@ version: "3"
 tasks:
   default:
     desc: Build, vet and test
-    deps: [build, vet, test]
+    deps:
+      - build
+      - vet
+      - test
   build:
     desc: Build the server
     cmds:
