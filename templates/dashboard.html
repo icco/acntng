@@ -1,0 +1,210 @@
+{{define "dashboard.html" -}}
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>acntng{{with .Month}} · {{monthName .}}{{end}}</title>
+<style>
+  :root {
+    --paper: #f7f8f6; --raised: #fff; --sunk: #eef0ed;
+    --ink: #10151c; --soft: #414b52; --faint: #6d7a77;
+    --rule: #d5dad6; --rule-strong: #b4bcb7;
+    --good: #2f6f62; --bad: #a63a2a; --warn: #9a6b1f;
+    --track: #e3e6e3;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper: #0d1116; --raised: #151b21; --sunk: #1b2228;
+      --ink: #e8ebe8; --soft: #aeb8b5; --faint: #7d8a86;
+      --rule: #2a333a; --rule-strong: #3d474e;
+      --good: #6fc4ac; --bad: #e28474; --warn: #d9a94f;
+      --track: #222a31;
+    }
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--paper); color: var(--ink);
+    font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 60rem; margin: 0 auto; padding: 2rem 1.25rem 5rem; display: flex; flex-direction: column; gap: 2.5rem; }
+  .num { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+  h1 { font-size: 1.6rem; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 1.2rem; margin: 0 0 0.75rem; }
+  .eyebrow { font-family: ui-monospace, monospace; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--faint); margin: 0; }
+  header { border-top: 2px solid var(--ink); padding-top: 0.85rem; display: flex; flex-wrap: wrap; gap: 0.35rem 1.5rem; justify-content: space-between; align-items: baseline; }
+
+  .figs { display: grid; gap: 1.25rem 2rem; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+          background: var(--raised); border: 1px solid var(--rule); padding: 1.25rem; }
+  .fig { display: flex; flex-direction: column; gap: 0.2rem; }
+  .fig b { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: 1.5rem; font-weight: 500; line-height: 1.1; }
+  .fig span { font-size: 0.75rem; color: var(--faint); }
+  .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
+
+  .scroll { overflow-x: auto; border: 1px solid var(--rule); background: var(--raised); }
+  table { border-collapse: collapse; width: 100%; min-width: 33rem; }
+  th, td { padding: 0.45rem 0.85rem; text-align: right; }
+  th:first-child, td:first-child { text-align: left; }
+  thead th { font-family: ui-monospace, monospace; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;
+             color: var(--faint); font-weight: 500; border-bottom: 1px solid var(--rule-strong); white-space: nowrap; }
+  tbody td { border-bottom: 1px solid var(--rule); }
+  tr.band td { background: var(--sunk); font-family: ui-monospace, monospace; font-size: 0.7rem;
+               text-transform: uppercase; letter-spacing: 0.1em; color: var(--soft); }
+  tr.sum td { font-weight: 600; background: var(--sunk); border-top: 1px solid var(--rule-strong); border-bottom: none; }
+
+  .track { width: 4.5rem; height: 6px; background: var(--track); border-radius: 3px; overflow: hidden; display: inline-block; vertical-align: middle; }
+  .track i { display: block; height: 100%; background: var(--good); }
+  .track i.over { background: var(--bad); }
+  .track i.tight { background: var(--warn); }
+
+  .notes { font-size: 0.82rem; color: var(--faint); margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.4rem; }
+  .err { border: 1px solid var(--bad); border-left: 4px solid var(--bad); background: var(--raised); padding: 0.85rem 1rem; font-size: 0.9rem; }
+  footer { border-top: 1px solid var(--rule); padding-top: 0.85rem; font-size: 0.75rem; color: var(--faint); }
+  a { color: var(--good); }
+  .months { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.5rem 1rem;
+            font-size: 0.85rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.6rem; margin-top: -1.5rem; }
+  .months strong { font-size: 1rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>acntng</h1>
+    <p class="eyebrow">as of {{stamp .GeneratedAt}}</p>
+  </header>
+
+  {{with .Budget}}
+  <nav class="months">
+    <a href="?month={{.PrevMonth}}" rel="prev">← {{monthName .PrevMonth}}</a>
+    <strong>{{monthName .Month}}</strong>
+    <a href="?month={{.NextMonth}}" rel="next">{{monthName .NextMonth}} →</a>
+  </nav>
+  {{end}}
+
+  {{with .BudgetErr}}<div class="err">{{.}}</div>{{end}}
+
+  {{with .Budget}}
+  {{$t := .Totals}}
+  <div class="figs">
+    <div class="fig">
+      {{if eq $t.IncomeBasis "budgeted"}}
+      <b class="num">{{money $t.IncomeBudgeted}}</b>
+      <span>income budgeted · {{money $t.IncomeActual}} received so far</span>
+      {{else}}
+      <b class="num">{{money $t.IncomeActual}}</b>
+      <span>income received · none budgeted</span>
+      {{end}}
+    </div>
+    <div class="fig">
+      <b class="num">{{money $t.DebtBudgeted}}</b>
+      <span>debt service · {{share $t.DebtShare}} of income</span>
+    </div>
+    <div class="fig">
+      <b class="num">{{money $t.LivingBudgeted}}</b>
+      <span>living budgeted</span>
+    </div>
+    <div class="fig">
+      <b class="num {{if lt $t.PlannedSurplus 0.0}}bad{{else}}good{{end}}">{{money $t.PlannedSurplus}}</b>
+      <span>planned surplus, measured against {{$t.IncomeBasis}} income</span>
+    </div>
+  </div>
+
+  <section>
+    <h2>Budget</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Category</th><th>Budget</th><th>Spent</th><th>Left</th><th>Used</th><th></th></tr>
+        </thead>
+        <tbody>
+          {{if .Debt}}<tr class="band"><td colspan="6">Debt service</td></tr>{{end}}
+          {{range .Debt}}{{template "line" .}}{{end}}
+          {{if .Debt}}<tr class="sum">
+            <td>Debt subtotal</td><td class="num">{{money $t.DebtBudgeted}}</td>
+            <td class="num">{{money $t.DebtSpent}}</td>
+            <td class="num">{{money (sub $t.DebtBudgeted $t.DebtSpent)}}</td><td></td><td></td>
+          </tr>{{end}}
+
+          {{if .Living}}<tr class="band"><td colspan="6">Living</td></tr>{{end}}
+          {{range .Living}}{{template "line" .}}{{end}}
+          {{if .Living}}<tr class="sum">
+            <td>Living subtotal</td><td class="num">{{money $t.LivingBudgeted}}</td>
+            <td class="num">{{money $t.LivingSpent}}</td>
+            <td class="num">{{money (sub $t.LivingBudgeted $t.LivingSpent)}}</td><td></td><td></td>
+          </tr>{{end}}
+
+          <tr class="sum">
+            <td>Total</td><td class="num">{{money $t.OutflowBudgeted}}</td>
+            <td class="num">{{money $t.OutflowSpent}}</td>
+            <td class="num">{{money (sub $t.OutflowBudgeted $t.OutflowSpent)}}</td><td></td><td></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    {{if gt $t.CategoriesOver 0}}
+    <p class="eyebrow" style="margin-top:0.75rem">{{$t.CategoriesOver}} categor{{if eq $t.CategoriesOver 1}}y is{{else}}ies are{{end}} over budget</p>
+    {{end}}
+  </section>
+  {{end}}
+
+  {{with .LoansErr}}<div class="err">{{.}}</div>{{end}}
+
+  {{with .Loans}}
+  <section>
+    <h2>Debt</h2>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Account</th><th>Balance</th><th>Monthly</th><th>As of</th></tr>
+        </thead>
+        <tbody>
+          {{range .Loans}}
+          <tr>
+            <td>{{with .DisplayName}}{{.}}{{else}}{{.Name}}{{end}}</td>
+            <td class="num">{{money .Balance}}</td>
+            <td class="num">{{payment .MonthlyPayment}}</td>
+            <td class="num" style="font-size:0.78rem;color:var(--faint)">{{.BalanceAsOf | shortDate}}</td>
+          </tr>
+          {{end}}
+          <tr class="sum">
+            <td>{{.Totals.Count}} accounts</td>
+            <td class="num">{{money .Totals.Balance}}</td>
+            <td class="num">{{money .Totals.MonthlyPayment}}</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+  {{end}}
+
+  {{with .Budget}}{{if .Notes}}
+  <section>
+    <h2>Notes</h2>
+    <ul class="notes">{{range .Notes}}<li>{{.}}</li>{{end}}</ul>
+  </section>
+  {{end}}{{end}}
+
+  <footer>
+    Balances and budgets are read live from Lunch Money. Nothing is stored here.
+    JSON at <a href="budget">budget</a> and <a href="loans">loans</a>.
+  </footer>
+
+</div>
+</body>
+</html>
+{{- end}}
+
+{{define "line" -}}
+<tr>
+  <td>{{.Name}}</td>
+  <td class="num">{{money .Budgeted}}</td>
+  <td class="num{{if .Over}} bad{{end}}">{{money .Spent}}</td>
+  <td class="num">{{money .Remaining}}</td>
+  <td class="num" style="font-size:0.8rem;color:var(--faint)">{{pct .PctUsed}}</td>
+  <td><span class="track"><i class="{{if .Over}}over{{else if tight .PctUsed}}tight{{end}}" style="width:{{bar .PctUsed}}%"></i></span></td>
+</tr>
+{{- end}}

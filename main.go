@@ -134,17 +134,67 @@ func run() int {
 	return 0
 }
 
+// Fetcher is everything acntng needs from the Lunch Money client, so tests can
+// supply canned data for both reports.
+type Fetcher interface {
+	LoanFetcher
+	BudgetFetcher
+}
+
 // Server holds the request-scoped dependencies for the HTTP handlers.
 type Server struct {
 	Log       *zap.SugaredLogger
-	Client    LoanFetcher
+	Client    Fetcher
 	Overrides map[string]float64
 	// SharedKey, when set, is required on report requests.
 	SharedKey string
 	// Now is injectable so tests can pin the reporting month.
 	Now func() time.Time
 
-	cache cache
+	loanCache   cache[*Report]
+	budgetCache cache[*BudgetReport]
+}
+
+// clock returns the injected clock, or the real one.
+func (s *Server) clock() time.Time {
+	if s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+// loanReport returns the loan report for these options, from cache when fresh.
+func (s *Server) loanReport(ctx context.Context, opts Options, now time.Time) (*Report, error) {
+	key := fmt.Sprintf("credit=%t&liabilities=%t", opts.IncludeCredit, opts.IncludeLiabilities)
+	if rep, ok := s.loanCache.get(key, now); ok {
+		return rep, nil
+	}
+
+	rep, err := BuildReport(ctx, s.Client, now, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	s.loanCache.set(key, rep, now)
+	return rep, nil
+}
+
+// budgetReport returns the budget report for the month containing at, from
+// cache when fresh. The cache is keyed by month so browsing between periods
+// does not evict the one being compared against.
+func (s *Server) budgetReport(ctx context.Context, at, now time.Time) (*BudgetReport, error) {
+	key := monthStart(at).Format("2006-01")
+	if rep, ok := s.budgetCache.get(key, now); ok {
+		return rep, nil
+	}
+
+	rep, err := BuildBudgetReport(ctx, s.Client, at)
+	if err != nil {
+		return nil, err
+	}
+
+	s.budgetCache.set(key, rep, now)
+	return rep, nil
 }
 
 // parseOverrides reads ACNTNG_PAYMENT_OVERRIDES: a JSON object mapping a loan
@@ -178,8 +228,9 @@ func router(s *Server, metrics http.Handler) http.Handler {
 
 	r.Group(func(r chi.Router) {
 		r.Use(requireSharedKey(s.SharedKey))
-		r.Get("/", s.handleLoans)
+		r.Get("/", s.handleDashboard)
 		r.Get("/loans", s.handleLoans)
+		r.Get("/budget", s.handleBudget)
 	})
 
 	return r
@@ -196,18 +247,7 @@ func (s *Server) handleLoans(w http.ResponseWriter, r *http.Request) {
 	}
 	opts.Overrides = s.Overrides
 
-	now := time.Now
-	if s.Now != nil {
-		now = s.Now
-	}
-
-	key := fmt.Sprintf("credit=%t&liabilities=%t", opts.IncludeCredit, opts.IncludeLiabilities)
-	if rep, ok := s.cache.get(key, now()); ok {
-		render.JSON(log, w, http.StatusOK, rep)
-		return
-	}
-
-	rep, err := BuildReport(r.Context(), s.Client, now(), opts)
+	rep, err := s.loanReport(r.Context(), opts, s.clock())
 	if err != nil {
 		log.Errorw("could not build loan report", zap.Error(err))
 		render.JSON(log, w, http.StatusBadGateway,
@@ -215,8 +255,22 @@ func (s *Server) handleLoans(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.cache.set(key, rep, now())
 	render.JSON(log, w, http.StatusOK, rep)
+}
+
+// monthFromRequest reads an optional month=YYYY-MM param, defaulting to the
+// month containing now.
+func monthFromRequest(r *http.Request, now time.Time) (time.Time, error) {
+	raw := r.URL.Query().Get("month")
+	if raw == "" {
+		return now, nil
+	}
+
+	at, err := time.Parse("2006-01", raw)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("month must look like 2006-01, got %q", raw)
+	}
+	return at, nil
 }
 
 // optionsFromRequest reads the params that widen what counts as a loan.

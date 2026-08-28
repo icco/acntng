@@ -15,11 +15,14 @@ type fakeClient struct {
 	assets       []*lunchmoney.Asset
 	plaid        []*lunchmoney.PlaidAccount
 	recurring    []*lunchmoney.RecurringExpense
+	budgets      []*lunchmoney.Budget
 	assetsErr    error
 	plaidErr     error
 	recurringErr error
+	budgetsErr   error
 
-	gotFilters *lunchmoney.RecurringExpenseFilters
+	gotFilters       *lunchmoney.RecurringExpenseFilters
+	gotBudgetFilters *lunchmoney.BudgetFilters
 }
 
 func (f *fakeClient) GetAssets(context.Context) ([]*lunchmoney.Asset, error) {
@@ -33,6 +36,11 @@ func (f *fakeClient) GetPlaidAccounts(context.Context) ([]*lunchmoney.PlaidAccou
 func (f *fakeClient) GetRecurringExpenses(_ context.Context, filters *lunchmoney.RecurringExpenseFilters) ([]*lunchmoney.RecurringExpense, error) {
 	f.gotFilters = filters
 	return f.recurring, f.recurringErr
+}
+
+func (f *fakeClient) GetBudgets(_ context.Context, filters *lunchmoney.BudgetFilters) ([]*lunchmoney.Budget, error) {
+	f.gotBudgetFilters = filters
+	return f.budgets, f.budgetsErr
 }
 
 var testNow = time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
