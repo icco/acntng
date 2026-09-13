@@ -41,14 +41,14 @@ const (
 // BudgetLine is one category's budget for a single month. Spent is positive
 // for outflow, matching how Lunch Money reports it.
 type BudgetLine struct {
-	CategoryID   int64    `json:"category_id"`
-	Name         string   `json:"name"`
-	GroupName    string   `json:"group_name,omitempty"`
-	IsIncome     bool     `json:"is_income"`
-	IsDebt       bool     `json:"is_debt"`
-	Budgeted     float64  `json:"budgeted"`
-	Spent        float64  `json:"spent"`
-	Remaining    float64  `json:"remaining"`
+	CategoryID int64   `json:"category_id"`
+	Name       string  `json:"name"`
+	GroupName  string  `json:"group_name,omitempty"`
+	IsIncome   bool    `json:"is_income"`
+	IsDebt     bool    `json:"is_debt"`
+	Budgeted   float64 `json:"budgeted"`
+	Spent      float64 `json:"spent"`
+	Remaining  float64 `json:"remaining"`
 	// PctUsed is nil when nothing is budgeted, so "0% used" and "no budget
 	// set" stay distinguishable.
 	PctUsed      *float64 `json:"pct_used"`
@@ -62,19 +62,19 @@ func (l BudgetLine) Over() bool {
 
 // BudgetTotals aggregates a month. Debt and living partition outflow.
 type BudgetTotals struct {
-	IncomeBudgeted      float64     `json:"income_budgeted"`
-	IncomeActual        float64     `json:"income_actual"`
-	IncomeBasis         IncomeBasis `json:"income_basis"`
-	DebtBudgeted        float64     `json:"debt_budgeted"`
-	DebtSpent           float64     `json:"debt_spent"`
-	LivingBudgeted      float64     `json:"living_budgeted"`
-	LivingSpent         float64     `json:"living_spent"`
-	OutflowBudgeted     float64     `json:"outflow_budgeted"`
-	OutflowSpent        float64     `json:"outflow_spent"`
+	IncomeBudgeted  float64     `json:"income_budgeted"`
+	IncomeActual    float64     `json:"income_actual"`
+	IncomeBasis     IncomeBasis `json:"income_basis"`
+	DebtBudgeted    float64     `json:"debt_budgeted"`
+	DebtSpent       float64     `json:"debt_spent"`
+	LivingBudgeted  float64     `json:"living_budgeted"`
+	LivingSpent     float64     `json:"living_spent"`
+	OutflowBudgeted float64     `json:"outflow_budgeted"`
+	OutflowSpent    float64     `json:"outflow_spent"`
 	// PlannedSurplus is income less everything budgeted: what the month is
 	// designed to save. ActualSurplus is the same against money actually spent.
-	PlannedSurplus     float64  `json:"planned_surplus"`
-	ActualSurplus      float64  `json:"actual_surplus"`
+	PlannedSurplus float64 `json:"planned_surplus"`
+	ActualSurplus  float64 `json:"actual_surplus"`
 	// DebtShare is debt service as a fraction of income, nil without income.
 	DebtShare          *float64 `json:"debt_share"`
 	CategoriesOver     int      `json:"categories_over"`
