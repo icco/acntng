@@ -29,11 +29,11 @@ func fixedNow(t time.Time) func() time.Time {
 
 func TestHandleLoansReturnsJSON(t *testing.T) {
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Car Loan", Balance: "9000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Car Loan", "9000.0000", "active"),
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 100, AssetID: 1, Payee: "Acme Motor Credit", Amount: "450.00", Currency: "usd", Cadence: "monthly"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(100, "Acme Motor Credit", "450.00", "month", 1, ptr(int64(1)), nil),
 		},
 	}
 	h := testServer(c, fixedNow(testNow))
@@ -63,8 +63,8 @@ func TestMonthlyPaymentSerializesAsNull(t *testing.T) {
 	// A loan with no derivable payment must be null, not 0 -- a consumer has
 	// to be able to tell "unknown" from "nothing owed monthly".
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Mystery", Balance: "500.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Mystery", "500.0000", "active"),
 		},
 	}
 	h := testServer(c, fixedNow(testNow))
@@ -93,7 +93,7 @@ func TestHealthz(t *testing.T) {
 }
 
 func TestUpstreamFailureIsBadGateway(t *testing.T) {
-	c := &fakeClient{assetsErr: errors.New("401 Unauthorized")}
+	c := &fakeClient{manualErr: errors.New("401 Unauthorized")}
 	h := testServer(c, fixedNow(testNow))
 
 	w := httptest.NewRecorder()
@@ -161,8 +161,8 @@ func TestCacheAvoidsRefetch(t *testing.T) {
 		}
 	}
 
-	if c.assetCalls != 1 {
-		t.Errorf("asset calls = %d, want 1 (cached)", c.assetCalls)
+	if c.manualCalls != 1 {
+		t.Errorf("manual calls = %d, want 1 (cached)", c.manualCalls)
 	}
 }
 
@@ -176,8 +176,8 @@ func TestCacheExpires(t *testing.T) {
 	now = now.Add(cacheTTL + time.Second)
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/loans", nil))
 
-	if c.assetCalls != 2 {
-		t.Errorf("asset calls = %d, want 2 after TTL expiry", c.assetCalls)
+	if c.manualCalls != 2 {
+		t.Errorf("manual calls = %d, want 2 after TTL expiry", c.manualCalls)
 	}
 }
 
@@ -188,8 +188,8 @@ func TestCacheIsKeyedByOptions(t *testing.T) {
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/loans", nil))
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/loans?include_credit=true", nil))
 
-	if c.assetCalls != 2 {
-		t.Errorf("asset calls = %d, want 2; different options must not share a cache entry", c.assetCalls)
+	if c.manualCalls != 2 {
+		t.Errorf("manual calls = %d, want 2; different options must not share a cache entry", c.manualCalls)
 	}
 }
 
@@ -213,13 +213,13 @@ func TestParseOverrides(t *testing.T) {
 
 // countingClient records how many times each endpoint was hit.
 type countingClient struct {
-	assetCalls int
+	manualCalls int
 }
 
-func (c *countingClient) GetAssets(_ context.Context) ([]*lunchmoney.Asset, error) {
-	c.assetCalls++
-	return []*lunchmoney.Asset{
-		{ID: 1, TypeName: "loan", Name: "Loan", Balance: "1000.0000", Currency: "usd", Status: "active"},
+func (c *countingClient) GetManualAccounts(_ context.Context) ([]*lunchmoney.ManualAccount, error) {
+	c.manualCalls++
+	return []*lunchmoney.ManualAccount{
+		manualAccount(1, "loan", "Loan", "1000.0000", "active"),
 	}, nil
 }
 
@@ -227,10 +227,48 @@ func (c *countingClient) GetPlaidAccounts(_ context.Context) ([]*lunchmoney.Plai
 	return nil, nil
 }
 
-func (c *countingClient) GetBudgets(_ context.Context, _ *lunchmoney.BudgetFilters) ([]*lunchmoney.Budget, error) {
+func (c *countingClient) GetBudgetSummary(_ context.Context, _ *lunchmoney.BudgetFilters) (*lunchmoney.BudgetSummary, error) {
 	return nil, nil
 }
 
-func (c *countingClient) GetRecurringExpenses(_ context.Context, _ *lunchmoney.RecurringExpenseFilters) ([]*lunchmoney.RecurringExpense, error) {
+func (c *countingClient) GetCategories(_ context.Context, _ *lunchmoney.CategoryFilters) ([]*lunchmoney.Category, error) {
 	return nil, nil
+}
+
+func (c *countingClient) GetRecurringItems(_ context.Context, _ *lunchmoney.RecurringItemFilters) ([]*lunchmoney.RecurringItem, error) {
+	return nil, nil
+}
+
+func TestRunCLI(t *testing.T) {
+	c := testBudgetFixture(
+		[]*lunchmoney.Category{
+			categoryRow(1, "Income", asIncome),
+			categoryRow(2, "Mortgage"),
+		},
+		[]*lunchmoney.SummaryCategory{
+			summaryRow(1, 5000, -5000),
+			summaryRow(2, 2000, 2000),
+		},
+	)
+	c.manualAccounts = []*lunchmoney.ManualAccount{
+		manualAccount(1, "loan", "Car Loan", "5000.0000", "active"),
+	}
+
+	// CLI text mode
+	code := runCLI(context.Background(), c, nil, "2026-08", false)
+	if code != 0 {
+		t.Errorf("runCLI text exit code = %d, want 0", code)
+	}
+
+	// CLI json mode
+	code = runCLI(context.Background(), c, nil, "2026-08", true)
+	if code != 0 {
+		t.Errorf("runCLI json exit code = %d, want 0", code)
+	}
+
+	// Invalid month
+	code = runCLI(context.Background(), c, nil, "invalid-month", false)
+	if code != 1 {
+		t.Errorf("runCLI invalid month exit code = %d, want 1", code)
+	}
 }
