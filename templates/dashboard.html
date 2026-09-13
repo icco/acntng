@@ -120,6 +120,14 @@
           <tr><th>Category</th><th>Budget</th><th>Spent</th><th>Left</th><th>Used</th><th></th></tr>
         </thead>
         <tbody>
+          {{if .Income}}<tr class="band"><td colspan="6">Income</td></tr>{{end}}
+          {{range .Income}}{{template "line" .}}{{end}}
+          {{if .Income}}<tr class="sum">
+            <td>Income subtotal</td><td class="num">{{money $t.IncomeBudgeted}}</td>
+            <td class="num">{{money $t.IncomeActual}}</td>
+            <td class="num">{{money (sub $t.IncomeBudgeted $t.IncomeActual)}}</td><td></td><td></td>
+          </tr>{{end}}
+
           {{if .Debt}}<tr class="band"><td colspan="6">Debt service</td></tr>{{end}}
           {{range .Debt}}{{template "line" .}}{{end}}
           {{if .Debt}}<tr class="sum">
@@ -137,7 +145,7 @@
           </tr>{{end}}
 
           <tr class="sum">
-            <td>Total</td><td class="num">{{money $t.OutflowBudgeted}}</td>
+            <td>Total Outflow</td><td class="num">{{money $t.OutflowBudgeted}}</td>
             <td class="num">{{money $t.OutflowSpent}}</td>
             <td class="num">{{money (sub $t.OutflowBudgeted $t.OutflowSpent)}}</td><td></td><td></td>
           </tr>
@@ -147,6 +155,9 @@
     {{if gt $t.CategoriesOver 0}}
     <p class="eyebrow" style="margin-top:0.75rem">{{$t.CategoriesOver}} categor{{if eq $t.CategoriesOver 1}}y is{{else}}ies are{{end}} over budget</p>
     {{end}}
+    {{if gt $t.UncategorizedSpent 0.0}}
+    <p class="eyebrow warn" style="margin-top:0.5rem">{{money $t.UncategorizedSpent}} across {{$t.UncategorizedCount}} uncategorized transaction{{if ne $t.UncategorizedCount 1}}s{{end}}</p>
+    {{end}}
   </section>
   {{end}}
 
@@ -154,24 +165,50 @@
 
   {{with .Loans}}
   <section>
-    <h2>Debt</h2>
+    <h2>Debt &amp; Accounts</h2>
+    {{if gt .Totals.LiquidCash 0.0}}
+    <div class="figs" style="margin-bottom:1.25rem">
+      <div class="fig">
+        <b class="num">{{money .Totals.Balance}}</b>
+        <span>total debt</span>
+      </div>
+      <div class="fig">
+        <b class="num good">{{money .Totals.LiquidCash}}</b>
+        <span>liquid cash (checking &amp; savings)</span>
+      </div>
+      <div class="fig">
+        <b class="num {{if gt .Totals.NetDebt 0.0}}bad{{else}}good{{end}}">{{money .Totals.NetDebt}}</b>
+        <span>net debt (debt − cash)</span>
+      </div>
+      {{with .Totals.CreditUtilization}}
+      <div class="fig">
+        <b class="num {{if gt . 30.0}}bad{{else}}good{{end}}">{{pct .}}</b>
+        <span>revolving credit utilization ({{money $.Totals.TotalCreditBalance}} / {{money $.Totals.TotalCreditLimit}})</span>
+      </div>
+      {{end}}
+    </div>
+    {{end}}
     <div class="scroll">
       <table>
         <thead>
-          <tr><th>Account</th><th>Balance</th><th>Monthly</th><th>As of</th></tr>
+          <tr><th>Account</th><th>Balance</th><th>Limit</th><th>Util</th><th>Monthly</th><th>As of</th></tr>
         </thead>
         <tbody>
           {{range .Loans}}
           <tr>
             <td>{{with .DisplayName}}{{.}}{{else}}{{.Name}}{{end}}</td>
             <td class="num">{{money .Balance}}</td>
-            <td class="num">{{payment .MonthlyPayment}}</td>
+            <td class="num" style="font-size:0.85rem;color:var(--faint)">{{with .CreditLimit}}{{money .}}{{else}}—{{end}}</td>
+            <td class="num" style="font-size:0.85rem;color:var(--faint)">{{with .Utilization}}{{pct .}}{{else}}—{{end}}</td>
+            <td class="num">{{payment .MonthlyPayment}}{{if eq .PaymentSource "none"}} <span style="font-size:0.75rem;color:var(--faint)" title="no recurring payment found">—</span>{{end}}</td>
             <td class="num" style="font-size:0.78rem;color:var(--faint)">{{.BalanceAsOf | shortDate}}</td>
           </tr>
           {{end}}
           <tr class="sum">
             <td>{{.Totals.Count}} accounts</td>
             <td class="num">{{money .Totals.Balance}}</td>
+            <td class="num" style="font-size:0.85rem">{{if gt .Totals.TotalCreditLimit 0.0}}{{money .Totals.TotalCreditLimit}}{{end}}</td>
+            <td class="num" style="font-size:0.85rem">{{with .Totals.CreditUtilization}}{{pct .}}{{end}}</td>
             <td class="num">{{money .Totals.MonthlyPayment}}</td>
             <td></td>
           </tr>
