@@ -77,11 +77,24 @@ Cadences normalize to monthly (`weekly` × 52/12, `every 2 weeks` × 26/12, `eve
 
 | Variable | Required | |
 | --- | --- | --- |
-| `LUNCHMONEY_TOKEN` | yes | From [developers.lunchmoney.app](https://developers.lunchmoney.app/). |
+| `LUNCHMONEY_TOKEN`, `LUNCH_MONEY_KEY`, or `LUNCHMONEY_API_TOKEN` | yes | From [developers.lunchmoney.app](https://developers.lunchmoney.app/). |
 | `ACNTNG_SHARED_KEY` | in production | Secret Caddy injects as `X-Acntng-Key`. Required on report routes when set; the service refuses to start without it when `NAT_ENV=production`. |
 | `ACNTNG_PAYMENT_OVERRIDES` | no | JSON mapping a loan ID to its monthly payment, e.g. `{"plaid:1001": 1500}`. |
 | `PORT` | no | Defaults to `8080`. |
 | `NAT_ENV` | no | `production` enables strict security headers and requires the shared key. |
+
+## CLI Mode
+
+`acntng` can run as a standalone CLI tool without running the server:
+
+```console
+$ task cli
+# or with flags
+$ go run . -cli -month 2026-09
+$ go run . -cli -json
+```
+
+Outputs a terminal-formatted summary of income, debt service, living expenses, revolving credit card utilization, and liquid cash vs net debt.
 
 ## Why a shared key as well as the portal
 
@@ -94,9 +107,9 @@ The portal protects the *public* route, but ~40 siblings on mist's shared `caddy
 ## Development
 
 ```console
-$ export LUNCHMONEY_TOKEN=...
+$ export LUNCH_MONEY_KEY=...  # or in .env
 $ task run   # no shared key needed outside production
 $ open http://localhost:8080/
 ```
 
-`task` runs build, vet and test.
+`task` runs build, vet and test. Run `task check` to verify formatting, vet, and race testing.

@@ -67,6 +67,8 @@ type Loan struct {
 	Balance         float64  `json:"balance"`
 	BalanceRaw      string   `json:"balance_raw"`
 	BalanceAsOf     string   `json:"balance_as_of,omitempty"`
+	CreditLimit     *float64 `json:"credit_limit,omitempty"`
+	Utilization     *float64 `json:"utilization,omitempty"`
 	MonthlyPayment  *float64 `json:"monthly_payment"`
 	// Always set, so a null MonthlyPayment is distinguishable from a real zero.
 	PaymentSource PaymentSource `json:"payment_source"`
@@ -76,10 +78,15 @@ type Loan struct {
 // Totals aggregates the report. Mixed currencies are an unconverted sum; see
 // Report.Notes.
 type Totals struct {
-	Count               int     `json:"count"`
-	Balance             float64 `json:"balance"`
-	MonthlyPayment      float64 `json:"monthly_payment"`
-	LoansMissingPayment int     `json:"loans_missing_payment"`
+	Count               int      `json:"count"`
+	Balance             float64  `json:"balance"`
+	MonthlyPayment      float64  `json:"monthly_payment"`
+	LoansMissingPayment int      `json:"loans_missing_payment"`
+	LiquidCash          float64  `json:"liquid_cash"`
+	NetDebt             float64  `json:"net_debt"`
+	TotalCreditLimit    float64  `json:"total_credit_limit,omitempty"`
+	TotalCreditBalance  float64  `json:"total_credit_balance,omitempty"`
+	CreditUtilization   *float64 `json:"credit_utilization,omitempty"`
 }
 
 // Report is the top-level JSON response.
@@ -117,18 +124,18 @@ func (o Options) wantType(t string) bool {
 // LoanFetcher is the slice of the Lunch Money client acntng needs, so tests can
 // supply canned data.
 type LoanFetcher interface {
-	GetAssets(ctx context.Context) ([]*lunchmoney.Asset, error)
+	GetManualAccounts(ctx context.Context) ([]*lunchmoney.ManualAccount, error)
 	GetPlaidAccounts(ctx context.Context) ([]*lunchmoney.PlaidAccount, error)
-	GetRecurringExpenses(ctx context.Context, filters *lunchmoney.RecurringExpenseFilters) ([]*lunchmoney.RecurringExpense, error)
+	GetRecurringItems(ctx context.Context, filters *lunchmoney.RecurringItemFilters) ([]*lunchmoney.RecurringItem, error)
 }
 
 // BuildReport assembles the loan report. A recurring-expense failure is not
 // fatal: balances are the primary answer, so payments degrade to null and the
 // reason lands in Notes.
 func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options) (*Report, error) {
-	assets, err := c.GetAssets(ctx)
+	manualAccounts, err := c.GetManualAccounts(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get assets: %w", err)
+		return nil, fmt.Errorf("get manual accounts: %w", err)
 	}
 
 	plaid, err := c.GetPlaidAccounts(ctx)
@@ -138,36 +145,61 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 
 	report := &Report{GeneratedAt: now.UTC(), Loans: []Loan{}}
 
-	month := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).Format("2006-01-02")
-	recurring, err := c.GetRecurringExpenses(ctx, &lunchmoney.RecurringExpenseFilters{
-		StartDate:       month,
-		DebitAsNegative: false,
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
+	monthEnd := monthStart.AddDate(0, 1, -1)
+	recurring, err := c.GetRecurringItems(ctx, &lunchmoney.RecurringItemFilters{
+		StartDate: monthStart.Format("2006-01-02"),
+		EndDate:   monthEnd.Format("2006-01-02"),
 	})
 	if err != nil {
 		report.Notes = append(report.Notes,
-			fmt.Sprintf("recurring expenses unavailable, monthly payments not derived: %v", err))
+			fmt.Sprintf("recurring items unavailable, monthly payments not derived: %v", err))
 		recurring = nil
 	}
 
-	for _, a := range assets {
-		if a == nil || !opts.wantType(a.TypeName) {
+	var liquidCash float64
+	cashCurrencies := map[string]bool{}
+	for _, a := range manualAccounts {
+		if a == nil || isClosed(a.Status) {
 			continue
 		}
-		if isClosed(a.Status) {
+		// Cash manual accounts count toward liquid cash.
+		if strings.ToLower(strings.TrimSpace(a.Type)) == "cash" {
+			bal := parseAmount(a.Balance)
+			if bal > 0 {
+				liquidCash += bal
+				if a.Currency != "" {
+					cashCurrencies[strings.ToUpper(a.Currency)] = true
+				}
+			}
+		}
+		if !opts.wantType(a.Type) {
 			continue
 		}
-		report.Loans = append(report.Loans, loanFromAsset(a))
+		report.Loans = append(report.Loans, loanFromManualAccount(a))
 	}
 
 	for _, p := range plaid {
-		if p == nil || !opts.wantType(p.Type) {
+		if p == nil || isClosed(p.Status) {
 			continue
 		}
-		if isClosed(p.Status) {
+		// Checking and savings depository accounts count toward liquid cash.
+		if strings.ToLower(strings.TrimSpace(p.Type)) == "depository" {
+			bal := parseAmount(p.Balance)
+			if bal > 0 {
+				liquidCash += bal
+				if p.Currency != "" {
+					cashCurrencies[strings.ToUpper(p.Currency)] = true
+				}
+			}
+		}
+		if !opts.wantType(p.Type) {
 			continue
 		}
 		report.Loans = append(report.Loans, loanFromPlaid(p))
 	}
+
+	report.Totals.LiquidCash = round2(liquidCash)
 
 	report.Notes = append(report.Notes, attachPayments(report.Loans, recurring, opts.Overrides)...)
 
@@ -178,7 +210,7 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 		return report.Loans[i].Name < report.Loans[j].Name
 	})
 
-	summarize(report)
+	summarize(report, cashCurrencies)
 
 	return report, nil
 }
@@ -193,7 +225,7 @@ func isClosed(status string) bool {
 	}
 }
 
-func loanFromAsset(a *lunchmoney.Asset) Loan {
+func loanFromManualAccount(a *lunchmoney.ManualAccount) Loan {
 	l := Loan{
 		ID:              fmt.Sprintf("asset:%d", a.ID),
 		Source:          SourceAsset,
@@ -201,8 +233,8 @@ func loanFromAsset(a *lunchmoney.Asset) Loan {
 		Name:            a.Name,
 		DisplayName:     a.DisplayName,
 		InstitutionName: a.InstitutionName,
-		Type:            a.TypeName,
-		Subtype:         a.SubtypeName,
+		Type:            a.Type,
+		Subtype:         a.Subtype,
 		Status:          a.Status,
 		Currency:        strings.ToUpper(a.Currency),
 		BalanceRaw:      a.Balance,
@@ -210,7 +242,7 @@ func loanFromAsset(a *lunchmoney.Asset) Loan {
 		PaymentSource:   PaymentSourceNone,
 	}
 	if !a.BalanceAsOf.IsZero() {
-		l.BalanceAsOf = a.BalanceAsOf.UTC().Format(time.RFC3339)
+		l.BalanceAsOf = a.BalanceAsOf.Time.UTC().Format(time.RFC3339)
 	}
 	return l
 }
@@ -231,8 +263,15 @@ func loanFromPlaid(p *lunchmoney.PlaidAccount) Loan {
 		Balance:         parseAmount(p.Balance),
 		PaymentSource:   PaymentSourceNone,
 	}
-	if !p.BalanceLastUpdate.IsZero() {
+	if p.BalanceLastUpdate != nil && !p.BalanceLastUpdate.IsZero() {
 		l.BalanceAsOf = p.BalanceLastUpdate.UTC().Format(time.RFC3339)
+	}
+	if p.Limit != nil && *p.Limit > 0 {
+		lim := round2(*p.Limit)
+		l.CreditLimit = &lim
+		bal := math.Max(l.Balance, 0)
+		u := round2((bal / *p.Limit) * 100)
+		l.Utilization = &u
 	}
 	return l
 }
@@ -280,7 +319,7 @@ func monthlyFactor(cadence string) (float64, bool) {
 
 // attachPayments derives monthly payments, applies overrides, and returns notes
 // about anything it declined to guess at.
-func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, overrides map[string]float64) []string {
+func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringItem, overrides map[string]float64) []string {
 	var notes []string
 
 	// ID-linked expenses are authoritative, so claim them before the payee pass.
@@ -295,7 +334,7 @@ func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, over
 			if !accountLinked(l, r) {
 				continue
 			}
-			factor, ok := monthlyFactor(r.Cadence)
+			factor, ok := r.TransactionCriteria.MonthlyFactor()
 			if !ok {
 				continue
 			}
@@ -314,7 +353,8 @@ func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, over
 		if r == nil || claimed[r.ID] {
 			continue
 		}
-		if _, ok := monthlyFactor(r.Cadence); !ok {
+		factor, ok := r.TransactionCriteria.MonthlyFactor()
+		if !ok {
 			continue
 		}
 
@@ -339,11 +379,10 @@ func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, over
 		if tied {
 			notes = append(notes, fmt.Sprintf(
 				"recurring payee %q matches more than one loan equally well; left unassigned rather than guessed",
-				r.Payee))
+				r.TransactionCriteria.Payee))
 			continue
 		}
 
-		factor, _ := monthlyFactor(r.Cadence)
 		loans[best].Payments = append(loans[best].Payments,
 			payment(r, factor, string(PaymentSourcePayeeMatch)))
 		claimed[r.ID] = true
@@ -385,29 +424,29 @@ func attachPayments(loans []Loan, recurring []*lunchmoney.RecurringExpense, over
 	return notes
 }
 
-func payment(r *lunchmoney.RecurringExpense, factor float64, matchedBy string) Payment {
+func payment(r *lunchmoney.RecurringItem, factor float64, matchedBy string) Payment {
 	// Magnitude, so a sign flip upstream cannot silently negate a total.
-	amt := math.Abs(parseAmount(r.Amount))
+	amt := math.Abs(parseAmount(r.TransactionCriteria.Amount))
 	return Payment{
 		ID:            r.ID,
-		Payee:         r.Payee,
+		Payee:         r.TransactionCriteria.Payee,
 		Description:   r.Description,
 		Amount:        amt,
-		Currency:      strings.ToUpper(r.Currency),
-		Cadence:       r.Cadence,
+		Currency:      strings.ToUpper(r.TransactionCriteria.Currency),
+		Cadence:       r.TransactionCriteria.Cadence(),
 		MonthlyAmount: round2(amt * factor),
-		BillingDate:   r.BillingDate,
+		BillingDate:   r.TransactionCriteria.AnchorDate,
 		MatchedBy:     matchedBy,
 	}
 }
 
 // accountLinked reports whether an expense points at this loan by ID.
-func accountLinked(l *Loan, r *lunchmoney.RecurringExpense) bool {
+func accountLinked(l *Loan, r *lunchmoney.RecurringItem) bool {
 	switch l.Source {
 	case SourceAsset:
-		return r.AssetID != 0 && r.AssetID == l.AccountID
+		return r.TransactionCriteria.ManualAccountID != nil && *r.TransactionCriteria.ManualAccountID == l.AccountID
 	case SourcePlaid:
-		return r.PlaidAccountID != 0 && r.PlaidAccountID == l.AccountID
+		return r.TransactionCriteria.PlaidAccountID != nil && *r.TransactionCriteria.PlaidAccountID == l.AccountID
 	default:
 		return false
 	}
@@ -419,8 +458,8 @@ const minMatchLen = 4
 
 // payeeMatchScore returns the length of the longest loan name matching this
 // payee, so callers can prefer the most specific loan. Zero means no match.
-func payeeMatchScore(l *Loan, r *lunchmoney.RecurringExpense) int {
-	payee := normalize(r.Payee)
+func payeeMatchScore(l *Loan, r *lunchmoney.RecurringItem) int {
+	payee := normalize(r.TransactionCriteria.Payee)
 	if len(payee) < minMatchLen {
 		return 0
 	}
@@ -453,14 +492,28 @@ func normalize(s string) string {
 }
 
 // summarize fills in totals and flags anything that makes them misleading.
-func summarize(rep *Report) {
+func summarize(rep *Report, cashCurrencies map[string]bool) {
 	currencies := map[string]bool{}
+	for c := range cashCurrencies {
+		currencies[c] = true
+	}
+	var totalCreditLimit, totalCreditBalance float64
+
 	for _, l := range rep.Loans {
 		rep.Totals.Count++
 		rep.Totals.Balance += l.Balance
 		if l.Currency != "" {
 			currencies[l.Currency] = true
 		}
+
+		if strings.ToLower(l.Type) == "credit" {
+			if l.CreditLimit != nil && *l.CreditLimit > 0 {
+				totalCreditLimit += *l.CreditLimit
+				// Negative balances on overpaid cards should not offset other cards in aggregate utilization.
+				totalCreditBalance += math.Max(l.Balance, 0)
+			}
+		}
+
 		if l.MonthlyPayment == nil {
 			rep.Totals.LoansMissingPayment++
 			continue
@@ -470,6 +523,14 @@ func summarize(rep *Report) {
 
 	rep.Totals.Balance = round2(rep.Totals.Balance)
 	rep.Totals.MonthlyPayment = round2(rep.Totals.MonthlyPayment)
+	rep.Totals.NetDebt = round2(rep.Totals.Balance - rep.Totals.LiquidCash)
+
+	if totalCreditLimit > 0 {
+		rep.Totals.TotalCreditLimit = round2(totalCreditLimit)
+		rep.Totals.TotalCreditBalance = round2(totalCreditBalance)
+		util := round2((totalCreditBalance / totalCreditLimit) * 100)
+		rep.Totals.CreditUtilization = &util
+	}
 
 	switch len(currencies) {
 	case 0:

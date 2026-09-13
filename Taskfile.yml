@@ -1,4 +1,6 @@
 version: "3"
+dotenv:
+  - .env
 tasks:
   default:
     desc: Build, vet and test
@@ -6,6 +8,12 @@ tasks:
       - build
       - vet
       - test
+  check:
+    desc: Format check, vet and test
+    cmds:
+      - test -z "$(gofmt -l .)"
+      - go vet ./...
+      - go test -race ./...
   build:
     desc: Build the server
     cmds:
@@ -34,6 +42,10 @@ tasks:
     desc: Run the server locally on port 8080
     cmds:
       - go run .
+  cli:
+    desc: Run acntng in CLI mode and print report directly
+    cmds:
+      - go run . -cli {{.CLI_ARGS}}
   docker:
     desc: Build the container image
     cmds:

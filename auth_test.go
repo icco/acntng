@@ -17,8 +17,8 @@ func keyedServer(key string) http.Handler {
 		SharedKey: key,
 		Now:       fixedNow(testNow),
 		Client: &fakeClient{
-			assets: []*lunchmoney.Asset{
-				{ID: 1, TypeName: "loan", Name: "Loan", Balance: "1000.0000", Currency: "usd", Status: "active"},
+			manualAccounts: []*lunchmoney.ManualAccount{
+				manualAccount(1, "loan", "Loan", "1000.0000", "active"),
 			},
 		},
 	}

@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -38,13 +40,28 @@ func main() {
 	os.Exit(run())
 }
 
+// getToken reads the Lunch Money API token from common environment variables.
+func getToken() string {
+	for _, env := range []string{"LUNCHMONEY_TOKEN", "LUNCH_MONEY_KEY", "LUNCHMONEY_API_TOKEN"} {
+		if v := os.Getenv(env); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 func run() int {
+	cliFlag := flag.Bool("cli", false, "Run in CLI mode and print report directly to stdout")
+	monthFlag := flag.String("month", "", "Reporting month in YYYY-MM format (defaults to current month)")
+	jsonFlag := flag.Bool("json", false, "Output report as JSON in CLI mode")
+	flag.Parse()
+
 	log := logging.Must(logging.NewLogger(serverName))
 	defer logging.Sync(log)
 
-	token := os.Getenv("LUNCHMONEY_TOKEN")
+	token := getToken()
 	if token == "" {
-		log.Errorw("LUNCHMONEY_TOKEN is required")
+		log.Errorw("LUNCHMONEY_TOKEN, LUNCH_MONEY_KEY, or LUNCHMONEY_API_TOKEN is required")
 		return 1
 	}
 
@@ -52,6 +69,19 @@ func run() int {
 	if err != nil {
 		log.Errorw("could not create lunchmoney client", zap.Error(err))
 		return 1
+	}
+
+	overrides, err := parseOverrides(os.Getenv("ACNTNG_PAYMENT_OVERRIDES"))
+	if err != nil {
+		log.Errorw("could not parse ACNTNG_PAYMENT_OVERRIDES", zap.Error(err))
+		return 1
+	}
+	if len(overrides) > 0 {
+		log.Infow("loaded payment overrides", "count", len(overrides))
+	}
+
+	if *cliFlag {
+		return runCLI(context.Background(), lm, overrides, *monthFlag, *jsonFlag)
 	}
 
 	// Siblings on mist's shared network reach this container directly, so fail
@@ -63,15 +93,6 @@ func run() int {
 			return 1
 		}
 		log.Warnw("ACNTNG_SHARED_KEY is unset; report routes are unauthenticated")
-	}
-
-	overrides, err := parseOverrides(os.Getenv("ACNTNG_PAYMENT_OVERRIDES"))
-	if err != nil {
-		log.Errorw("could not parse ACNTNG_PAYMENT_OVERRIDES", zap.Error(err))
-		return 1
-	}
-	if len(overrides) > 0 {
-		log.Infow("loaded payment overrides", "count", len(overrides))
 	}
 
 	port := "8080"
@@ -293,4 +314,158 @@ func optionsFromRequest(r *http.Request) (Options, error) {
 	}
 
 	return opts, nil
+}
+
+func runCLI(ctx context.Context, client Fetcher, overrides map[string]float64, monthStr string, asJSON bool) int {
+	now := time.Now()
+	at := now
+	if monthStr != "" {
+		parsed, err := time.Parse("2006-01", monthStr)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: invalid month %q (expected YYYY-MM): %v\n", monthStr, err)
+			return 1
+		}
+		at = parsed
+	}
+
+	budgetRep, err := BuildBudgetReport(ctx, client, at)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error fetching budget report: %v\n", err)
+		return 1
+	}
+
+	opts := Options{IncludeCredit: true, Overrides: overrides}
+	loanRep, err := BuildReport(ctx, client, at, opts)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error fetching loan report: %v\n", err)
+		return 1
+	}
+
+	if asJSON {
+		out := map[string]any{
+			"budget": budgetRep,
+			"loans":  loanRep,
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(out); err != nil {
+			fmt.Fprintf(os.Stderr, "error encoding json: %v\n", err)
+			return 1
+		}
+		return 0
+	}
+
+	printCLIReport(budgetRep, loanRep)
+	return 0
+}
+
+func printCLIReport(budget *BudgetReport, loans *Report) {
+	fmt.Printf("\n=== acntng report: %s ===\n\n", budget.Month)
+
+	bt := budget.Totals
+	fmt.Printf("BUDGET TOTALS\n")
+	fmt.Printf("  Income Budgeted:   %s  (Actual: %s)\n", money(bt.IncomeBudgeted), money(bt.IncomeActual))
+	fmt.Printf("  Debt Budgeted:     %s  (Spent:  %s)\n", money(bt.DebtBudgeted), money(bt.DebtSpent))
+	fmt.Printf("  Living Budgeted:   %s  (Spent:  %s)\n", money(bt.LivingBudgeted), money(bt.LivingSpent))
+	if bt.UncategorizedSpent > 0 {
+		fmt.Printf("  Uncategorized:     —  (Spent:  %s across %d txs)\n", money(bt.UncategorizedSpent), bt.UncategorizedCount)
+	}
+	fmt.Printf("  Total Outflow:     %s  (Spent:  %s)\n", money(bt.OutflowBudgeted), money(bt.OutflowSpent))
+	fmt.Printf("  Planned Surplus:   %s\n", money(bt.PlannedSurplus))
+	fmt.Printf("  Actual Surplus:    %s\n\n", money(bt.ActualSurplus))
+
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	if len(budget.Income) > 0 {
+		fmt.Println("INCOME")
+		fmt.Fprintln(w, "  Category\tBudgeted\tActual\tRemaining\t% Received")
+		for _, l := range budget.Income {
+			pctStr := "—"
+			if l.PctUsed != nil {
+				pctStr = fmt.Sprintf("%.0f%%", *l.PctUsed)
+			}
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", l.Name, money(l.Budgeted), money(l.Spent), money(l.Remaining), pctStr)
+		}
+		_ = w.Flush()
+		fmt.Println()
+	}
+
+	if len(budget.Debt) > 0 {
+		fmt.Println("DEBT SERVICE")
+		fmt.Fprintln(w, "  Category\tBudgeted\tSpent\tRemaining\t% Used")
+		for _, l := range budget.Debt {
+			pctStr := "—"
+			if l.PctUsed != nil {
+				pctStr = fmt.Sprintf("%.0f%%", *l.PctUsed)
+			}
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", l.Name, money(l.Budgeted), money(l.Spent), money(l.Remaining), pctStr)
+		}
+		_ = w.Flush()
+		fmt.Println()
+	}
+
+	if len(budget.Living) > 0 {
+		fmt.Println("LIVING EXPENSES")
+		fmt.Fprintln(w, "  Category\tBudgeted\tSpent\tRemaining\t% Used")
+		for _, l := range budget.Living {
+			pctStr := "—"
+			if l.PctUsed != nil {
+				pctStr = fmt.Sprintf("%.0f%%", *l.PctUsed)
+			}
+			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", l.Name, money(l.Budgeted), money(l.Spent), money(l.Remaining), pctStr)
+		}
+		_ = w.Flush()
+		fmt.Println()
+	}
+
+	lt := loans.Totals
+	fmt.Println("DEBT & ACCOUNTS")
+	if lt.Balance > 0 || lt.LiquidCash > 0 || lt.CreditUtilization != nil {
+		fmt.Printf("  Total Debt: %s | Liquid Cash: %s | Net Debt: %s\n", money(lt.Balance), money(lt.LiquidCash), money(lt.NetDebt))
+		if lt.CreditUtilization != nil {
+			fmt.Printf("  Revolving Credit Utilization: %.0f%% (%s / %s)\n", *lt.CreditUtilization, money(lt.TotalCreditBalance), money(lt.TotalCreditLimit))
+		}
+		fmt.Println()
+	}
+
+	fmt.Fprintln(w, "  Account\tBalance\tLimit\tUtil\tMonthly\tSource")
+	for _, l := range loans.Loans {
+		name := l.Name
+		if l.DisplayName != "" {
+			name = l.DisplayName
+		}
+		limStr := "—"
+		if l.CreditLimit != nil {
+			limStr = money(*l.CreditLimit)
+		}
+		utilStr := "—"
+		if l.Utilization != nil {
+			utilStr = fmt.Sprintf("%.0f%%", *l.Utilization)
+		}
+		moStr := "—"
+		if l.MonthlyPayment != nil {
+			moStr = money(*l.MonthlyPayment)
+		}
+		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\n", name, money(l.Balance), limStr, utilStr, moStr, l.PaymentSource)
+	}
+	fmt.Fprintf(w, "  TOTAL (%d accounts)\t%s\t%s\t%s\t%s\t\n", lt.Count, money(lt.Balance), money(lt.TotalCreditLimit), utilStrOrEmpty(lt.CreditUtilization), money(lt.MonthlyPayment))
+	_ = w.Flush()
+	fmt.Println()
+
+	if len(budget.Notes) > 0 || len(loans.Notes) > 0 {
+		fmt.Println("NOTES")
+		for _, n := range budget.Notes {
+			fmt.Printf("  • %s\n", n)
+		}
+		for _, n := range loans.Notes {
+			fmt.Printf("  • %s\n", n)
+		}
+		fmt.Println()
+	}
+}
+
+func utilStrOrEmpty(p *float64) string {
+	if p == nil {
+		return ""
+	}
+	return fmt.Sprintf("%.0f%%", *p)
 }

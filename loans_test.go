@@ -12,35 +12,90 @@ import (
 
 // fakeClient serves canned Lunch Money data.
 type fakeClient struct {
-	assets       []*lunchmoney.Asset
-	plaid        []*lunchmoney.PlaidAccount
-	recurring    []*lunchmoney.RecurringExpense
-	budgets      []*lunchmoney.Budget
-	assetsErr    error
-	plaidErr     error
-	recurringErr error
-	budgetsErr   error
+	manualAccounts []*lunchmoney.ManualAccount
+	plaid          []*lunchmoney.PlaidAccount
+	recurring      []*lunchmoney.RecurringItem
+	summary        *lunchmoney.BudgetSummary
+	categories     []*lunchmoney.Category
+	user           *lunchmoney.User
 
-	gotFilters       *lunchmoney.RecurringExpenseFilters
-	gotBudgetFilters *lunchmoney.BudgetFilters
+	manualErr     error
+	plaidErr      error
+	recurringErr  error
+	summaryErr    error
+	categoriesErr error
+	userErr       error
+
+	gotFilters         *lunchmoney.RecurringItemFilters
+	gotBudgetFilters   *lunchmoney.BudgetFilters
+	gotCategoryFilters *lunchmoney.CategoryFilters
 }
 
-func (f *fakeClient) GetAssets(context.Context) ([]*lunchmoney.Asset, error) {
-	return f.assets, f.assetsErr
+func (f *fakeClient) GetManualAccounts(context.Context) ([]*lunchmoney.ManualAccount, error) {
+	return f.manualAccounts, f.manualErr
 }
 
 func (f *fakeClient) GetPlaidAccounts(context.Context) ([]*lunchmoney.PlaidAccount, error) {
 	return f.plaid, f.plaidErr
 }
 
-func (f *fakeClient) GetRecurringExpenses(_ context.Context, filters *lunchmoney.RecurringExpenseFilters) ([]*lunchmoney.RecurringExpense, error) {
+func (f *fakeClient) GetRecurringItems(_ context.Context, filters *lunchmoney.RecurringItemFilters) ([]*lunchmoney.RecurringItem, error) {
 	f.gotFilters = filters
 	return f.recurring, f.recurringErr
 }
 
-func (f *fakeClient) GetBudgets(_ context.Context, filters *lunchmoney.BudgetFilters) ([]*lunchmoney.Budget, error) {
+func (f *fakeClient) GetBudgetSummary(_ context.Context, filters *lunchmoney.BudgetFilters) (*lunchmoney.BudgetSummary, error) {
 	f.gotBudgetFilters = filters
-	return f.budgets, f.budgetsErr
+	return f.summary, f.summaryErr
+}
+
+func (f *fakeClient) GetCategories(_ context.Context, filters *lunchmoney.CategoryFilters) ([]*lunchmoney.Category, error) {
+	f.gotCategoryFilters = filters
+	return f.categories, f.categoriesErr
+}
+
+func (f *fakeClient) GetUser(context.Context) (*lunchmoney.User, error) {
+	return f.user, f.userErr
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func manualAccount(id int64, accountType, name, balance, status string) *lunchmoney.ManualAccount {
+	return &lunchmoney.ManualAccount{
+		ID:       id,
+		Type:     accountType,
+		Name:     name,
+		Balance:  balance,
+		Currency: "usd",
+		Status:   status,
+	}
+}
+
+func plaidAccount(id int64, accountType, subtype, name, balance, status string) *lunchmoney.PlaidAccount {
+	return &lunchmoney.PlaidAccount{
+		ID:       id,
+		Type:     accountType,
+		Subtype:  subtype,
+		Name:     name,
+		Balance:  balance,
+		Currency: "usd",
+		Status:   status,
+	}
+}
+
+func recurringItem(id int64, payee, amount, granularity string, quantity int64, manualID, plaidID *int64) *lunchmoney.RecurringItem {
+	return &lunchmoney.RecurringItem{
+		ID: id,
+		TransactionCriteria: lunchmoney.RecurringCriteria{
+			Payee:           payee,
+			Amount:          amount,
+			Currency:        "usd",
+			Granularity:     granularity,
+			Quantity:        quantity,
+			ManualAccountID: manualID,
+			PlaidAccountID:  plaidID,
+		},
+	}
 }
 
 var testNow = time.Date(2026, time.August, 27, 12, 0, 0, 0, time.UTC)
@@ -103,16 +158,17 @@ func TestParseAmountKeepsCents(t *testing.T) {
 
 func TestBuildReportFiltersToLoansOnly(t *testing.T) {
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Student Loan", Balance: "12000.0000", Currency: "usd", Status: "active"},
-			{ID: 2, TypeName: "cash", Name: "Checking", Balance: "500.0000", Currency: "usd", Status: "active"},
-			{ID: 3, TypeName: "other liability", Name: "Owed Mom", Balance: "300.0000", Currency: "usd", Status: "active"},
-			{ID: 4, TypeName: "loan", Name: "Paid Off", Balance: "0.0000", Currency: "usd", Status: "closed"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Student Loan", "12000.0000", "active"),
+			manualAccount(2, "cash", "Checking", "500.0000", "active"),
+			manualAccount(3, "other liability", "Owed Mom", "300.0000", "active"),
+			manualAccount(4, "loan", "Paid Off", "0.0000", "closed"),
 		},
 		plaid: []*lunchmoney.PlaidAccount{
-			{ID: 10, Type: "loan", Subtype: "mortgage", Name: "Mortgage", Balance: "250000.0000", Currency: "usd", Status: "active"},
-			{ID: 11, Type: "credit", Subtype: "credit card", Name: "Amex", Balance: "1200.0000", Currency: "usd", Status: "active"},
-			{ID: 12, Type: "depository", Name: "Savings", Balance: "9000.0000", Currency: "usd", Status: "active"},
+			plaidAccount(10, "loan", "mortgage", "Mortgage", "250000.0000", "active"),
+			plaidAccount(11, "credit", "credit card", "Amex", "1200.0000", "active"),
+			plaidAccount(12, "depository", "", "Savings", "9000.0000", "active"),
+			plaidAccount(13, "loan", "mortgage", "Old Mortgage", "0.0000", "closed"),
 		},
 	}
 
@@ -138,15 +194,22 @@ func TestBuildReportFiltersToLoansOnly(t *testing.T) {
 	if rep.Totals.Balance != 262000 {
 		t.Errorf("totals.balance = %v, want 262000", rep.Totals.Balance)
 	}
+	// Liquid cash: Checking (500) + Savings (9000) = 9500
+	if rep.Totals.LiquidCash != 9500 {
+		t.Errorf("totals.liquid_cash = %v, want 9500", rep.Totals.LiquidCash)
+	}
+	if rep.Totals.NetDebt != 252500 {
+		t.Errorf("totals.net_debt = %v, want 252500", rep.Totals.NetDebt)
+	}
 }
 
 func TestBuildReportOptInTypes(t *testing.T) {
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 3, TypeName: "other liability", Name: "Owed Mom", Balance: "300.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(3, "other liability", "Owed Mom", "300.0000", "active"),
 		},
 		plaid: []*lunchmoney.PlaidAccount{
-			{ID: 11, Type: "credit", Name: "Amex", Balance: "1200.0000", Currency: "usd", Status: "active"},
+			plaidAccount(11, "credit", "", "Amex", "1200.0000", "active"),
 		},
 	}
 
@@ -162,11 +225,11 @@ func TestBuildReportOptInTypes(t *testing.T) {
 
 func TestMonthlyPaymentFromAccountLink(t *testing.T) {
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Car Loan", Balance: "9000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Car Loan", "9000.0000", "active"),
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 100, AssetID: 1, Payee: "Acme Motor Credit", Amount: "450.00", Currency: "usd", Cadence: "monthly"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(100, "Acme Motor Credit", "450.00", "month", 1, ptr(int64(1)), nil),
 		},
 	}
 
@@ -195,14 +258,14 @@ func TestMonthlyPaymentFromPayeeMatch(t *testing.T) {
 	// The realistic case: the recurring expense is booked against the
 	// checking account it is paid from, not the loan.
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Meridian", InstitutionName: "Meridian", Balance: "22000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			{ID: 1, Type: "loan", Name: "Meridian", InstitutionName: "Meridian", Balance: "22000.0000", Currency: "usd", Status: "active"},
 		},
 		plaid: []*lunchmoney.PlaidAccount{
 			{ID: 50, Type: "depository", Name: "Checking", Balance: "1000.0000", Currency: "usd", Status: "active"},
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 101, PlaidAccountID: 50, Payee: "Meridian Student Loan", Amount: "310.00", Currency: "usd", Cadence: "monthly"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(101, "Meridian Student Loan", "310.00", "month", 1, nil, ptr(int64(50))),
 		},
 	}
 
@@ -222,11 +285,11 @@ func TestMonthlyPaymentFromPayeeMatch(t *testing.T) {
 
 func TestMissingPaymentIsNullNotZero(t *testing.T) {
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Mystery Debt", Balance: "500.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Mystery Debt", "500.0000", "active"),
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 102, PlaidAccountID: 99, Payee: "Netflix", Amount: "15.99", Currency: "usd", Cadence: "monthly"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(102, "Netflix", "15.99", "month", 1, nil, ptr(int64(99))),
 		},
 	}
 
@@ -252,11 +315,11 @@ func TestMissingPaymentIsNullNotZero(t *testing.T) {
 
 func TestCadenceNormalizedToMonthly(t *testing.T) {
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Biweekly Loan", Balance: "1000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Biweekly Loan", "1000.0000", "active"),
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 103, AssetID: 1, Payee: "Lender", Amount: "100.00", Currency: "usd", Cadence: "every 2 weeks"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(103, "Lender", "100.00", "week", 2, ptr(int64(1)), nil),
 		},
 	}
 
@@ -273,11 +336,11 @@ func TestCadenceNormalizedToMonthly(t *testing.T) {
 
 func TestOnceCadenceExcluded(t *testing.T) {
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Loan", Balance: "1000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Loan", "1000.0000", "active"),
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 104, AssetID: 1, Payee: "Lender", Amount: "1000.00", Currency: "usd", Cadence: "once"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(104, "Lender", "1000.00", "once", 1, ptr(int64(1)), nil),
 		},
 	}
 
@@ -293,11 +356,11 @@ func TestOnceCadenceExcluded(t *testing.T) {
 
 func TestOverrideWins(t *testing.T) {
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Car Loan", Balance: "9000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Car Loan", "9000.0000", "active"),
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 105, AssetID: 1, Payee: "Lender", Amount: "450.00", Currency: "usd", Cadence: "monthly"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(105, "Lender", "450.00", "month", 1, ptr(int64(1)), nil),
 		},
 	}
 
@@ -319,12 +382,12 @@ func TestOverrideWins(t *testing.T) {
 
 func TestMultiplePaymentsSum(t *testing.T) {
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Loan", Balance: "1000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Loan", "1000.0000", "active"),
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 106, AssetID: 1, Payee: "Lender", Amount: "300.00", Currency: "usd", Cadence: "monthly"},
-			{ID: 107, AssetID: 1, Payee: "Lender extra", Amount: "600.00", Currency: "usd", Cadence: "twice a year"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(106, "Lender", "300.00", "month", 1, ptr(int64(1)), nil),
+			recurringItem(107, "Lender extra", "600.00", "month", 6, ptr(int64(1)), nil),
 		},
 	}
 
@@ -344,11 +407,11 @@ func TestMultiplePaymentsSum(t *testing.T) {
 
 func TestNegativeAmountTreatedAsMagnitude(t *testing.T) {
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Loan", Balance: "1000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Loan", "1000.0000", "active"),
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 108, AssetID: 1, Payee: "Lender", Amount: "-450.00", Currency: "usd", Cadence: "monthly"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(108, "Lender", "-450.00", "month", 1, ptr(int64(1)), nil),
 		},
 	}
 
@@ -366,8 +429,8 @@ func TestRecurringFailureDegradesGracefully(t *testing.T) {
 	// Balances are the primary answer; losing recurring expenses must not
 	// take the whole report down.
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Loan", Balance: "1000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Loan", "1000.0000", "active"),
 		},
 		recurringErr: errors.New("429 Too Many Requests"),
 	}
@@ -386,7 +449,7 @@ func TestRecurringFailureDegradesGracefully(t *testing.T) {
 }
 
 func TestAssetsFailureIsFatal(t *testing.T) {
-	c := &fakeClient{assetsErr: errors.New("401 Unauthorized")}
+	c := &fakeClient{manualErr: errors.New("401 Unauthorized")}
 
 	if _, err := BuildReport(context.Background(), c, testNow, Options{}); err == nil {
 		t.Fatal("want an error when assets cannot be read")
@@ -395,11 +458,12 @@ func TestAssetsFailureIsFatal(t *testing.T) {
 
 func TestMixedCurrencyIsFlagged(t *testing.T) {
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "US Loan", Balance: "1000.0000", Currency: "usd", Status: "active"},
-			{ID: 2, TypeName: "loan", Name: "EU Loan", Balance: "2000.0000", Currency: "eur", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "US Loan", "1000.0000", "active"),
+			manualAccount(2, "loan", "EU Loan", "2000.0000", "active"),
 		},
 	}
+	c.manualAccounts[1].Currency = "eur"
 
 	rep, err := BuildReport(context.Background(), c, testNow, Options{})
 	if err != nil {
@@ -424,19 +488,27 @@ func TestMixedCurrencyIsFlagged(t *testing.T) {
 func TestPayeeMatchIgnoresShortStringsBothWays(t *testing.T) {
 	// A short loan name must not substring-match an unrelated payee...
 	l := &Loan{Name: "Car", Source: SourceAsset}
-	if got := payeeMatchScore(l, &lunchmoney.RecurringExpense{Payee: "Carwash Monthly"}); got != 0 {
+	r := &lunchmoney.RecurringItem{
+		TransactionCriteria: lunchmoney.RecurringCriteria{Payee: "Carwash Monthly"},
+	}
+	if got := payeeMatchScore(l, r); got != 0 {
 		t.Errorf("short loan name scored %d, want 0", got)
 	}
 
 	// ...and neither must a short payee against a long loan name.
 	l = &Loan{Name: "Meridian US Loan", Source: SourceAsset}
-	if got := payeeMatchScore(l, &lunchmoney.RecurringExpense{Payee: "US"}); got != 0 {
+	r = &lunchmoney.RecurringItem{
+		TransactionCriteria: lunchmoney.RecurringCriteria{Payee: "US"},
+	}
+	if got := payeeMatchScore(l, r); got != 0 {
 		t.Errorf("short payee scored %d, want 0", got)
 	}
 }
 
 func TestPayeeMatchScorePrefersSpecificName(t *testing.T) {
-	r := &lunchmoney.RecurringExpense{Payee: "Northgate"}
+	r := &lunchmoney.RecurringItem{
+		TransactionCriteria: lunchmoney.RecurringCriteria{Payee: "Northgate"},
+	}
 
 	short := payeeMatchScore(&Loan{Name: "Northgate", Source: SourceAsset}, r)
 	long := payeeMatchScore(&Loan{Name: "Northgate Auto", Source: SourceAsset}, r)
@@ -453,12 +525,12 @@ func TestPayeeMatchNotDoubleCounted(t *testing.T) {
 	// Two loans at one institution with a single recurring payee. Crediting
 	// both would double the reported monthly total.
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Northgate Auto", Balance: "9000.0000", Currency: "usd", Status: "active"},
-			{ID: 2, TypeName: "loan", Name: "Northgate Student", Balance: "22000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Northgate Auto", "9000.0000", "active"),
+			manualAccount(2, "loan", "Northgate Student", "22000.0000", "active"),
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 200, PlaidAccountID: 99, Payee: "Northgate", Amount: "400.00", Currency: "usd", Cadence: "monthly"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(200, "Northgate", "400.00", "month", 1, nil, ptr(int64(99))),
 		},
 	}
 
@@ -486,12 +558,12 @@ func TestAmbiguousPayeeIsReportedNotGuessed(t *testing.T) {
 	// Two loans whose names match the payee equally well. Picking one at
 	// random would be a silent coin flip, so neither is credited.
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Northgate", Balance: "9000.0000", Currency: "usd", Status: "active"},
-			{ID: 2, TypeName: "loan", Name: "Northgate", Balance: "22000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Northgate", "9000.0000", "active"),
+			manualAccount(2, "loan", "Northgate", "22000.0000", "active"),
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 201, PlaidAccountID: 99, Payee: "Northgate", Amount: "400.00", Currency: "usd", Cadence: "monthly"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(201, "Northgate", "400.00", "month", 1, nil, ptr(int64(99))),
 		},
 	}
 
@@ -519,12 +591,12 @@ func TestAccountLinkBeatsPayeeMatch(t *testing.T) {
 	// An ID-linked expense is authoritative; a payee-matching expense must
 	// not also pile onto that loan.
 	c := &fakeClient{
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Harborview Mortgage", Balance: "250000.0000", Currency: "usd", Status: "active"},
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Harborview Mortgage", "250000.0000", "active"),
 		},
-		recurring: []*lunchmoney.RecurringExpense{
-			{ID: 202, AssetID: 1, Payee: "Harborview", Amount: "1500.00", Currency: "usd", Cadence: "monthly"},
-			{ID: 203, PlaidAccountID: 99, Payee: "Harborview Mortgage", Amount: "1500.00", Currency: "usd", Cadence: "monthly"},
+		recurring: []*lunchmoney.RecurringItem{
+			recurringItem(202, "Harborview", "1500.00", "month", 1, ptr(int64(1)), nil),
+			recurringItem(203, "Harborview Mortgage", "1500.00", "month", 1, nil, ptr(int64(99))),
 		},
 	}
 
@@ -552,5 +624,78 @@ func TestNormalize(t *testing.T) {
 		if got := normalize(tt.in); got != tt.want {
 			t.Errorf("normalize(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestCreditUtilizationZeroAndNegativeBalances(t *testing.T) {
+	lim1 := 5000.0
+	lim2 := 2000.0
+	lim3 := 4000.0
+	c := &fakeClient{
+		plaid: []*lunchmoney.PlaidAccount{
+			{ID: 1, Type: "credit", Name: "Card Zero", Balance: "0.0000", Currency: "usd", Status: "active", Limit: &lim1},
+			{ID: 2, Type: "credit", Name: "Card Negative", Balance: "-100.0000", Currency: "usd", Status: "active", Limit: &lim2},
+			{ID: 3, Type: "credit", Name: "Card Positive", Balance: "1000.0000", Currency: "usd", Status: "active", Limit: &lim3},
+		},
+	}
+
+	rep, err := BuildReport(context.Background(), c, testNow, Options{IncludeCredit: true})
+	if err != nil {
+		t.Fatalf("BuildReport: %v", err)
+	}
+
+	for _, l := range rep.Loans {
+		switch l.Name {
+		case "Card Zero":
+			if l.Utilization == nil || *l.Utilization != 0 {
+				t.Errorf("Card Zero util = %v, want 0%%", l.Utilization)
+			}
+		case "Card Negative":
+			if l.Utilization == nil || *l.Utilization != 0 {
+				t.Errorf("Card Negative util = %v, want 0%%", l.Utilization)
+			}
+		case "Card Positive":
+			if l.Utilization == nil || *l.Utilization != 25 {
+				t.Errorf("Card Positive util = %v, want 25%%", l.Utilization)
+			}
+		}
+	}
+
+	if rep.Totals.TotalCreditBalance != 1000 {
+		t.Errorf("totals.credit_balance = %v, want 1000 (negative balance clamped)", rep.Totals.TotalCreditBalance)
+	}
+	if rep.Totals.TotalCreditLimit != 11000 {
+		t.Errorf("totals.credit_limit = %v, want 11000", rep.Totals.TotalCreditLimit)
+	}
+	if rep.Totals.CreditUtilization == nil || *rep.Totals.CreditUtilization != 9.09 {
+		t.Errorf("totals.credit_utilization = %v, want 9.09%%", rep.Totals.CreditUtilization)
+	}
+}
+
+func TestMixedCurrencyFromCashAccounts(t *testing.T) {
+	c := &fakeClient{
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "US Loan", "1000.0000", "active"),
+			manualAccount(2, "cash", "EUR Checking", "2000.0000", "active"),
+		},
+	}
+	c.manualAccounts[1].Currency = "eur"
+
+	rep, err := BuildReport(context.Background(), c, testNow, Options{})
+	if err != nil {
+		t.Fatalf("BuildReport: %v", err)
+	}
+
+	if rep.Currency != "" {
+		t.Errorf("currency = %q, want empty for mixed cash/loan currency", rep.Currency)
+	}
+	var found bool
+	for _, n := range rep.Notes {
+		if strings.Contains(n, "multiple currencies") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note flagging multiple currencies from cash, got %v", rep.Notes)
 	}
 }
