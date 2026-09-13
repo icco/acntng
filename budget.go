@@ -41,18 +41,18 @@ const (
 // BudgetLine is one category's budget for a single month. Spent is positive
 // for outflow, matching how Lunch Money reports it.
 type BudgetLine struct {
-	CategoryID int     `json:"category_id"`
-	Name       string  `json:"name"`
-	GroupName  string  `json:"group_name,omitempty"`
-	IsIncome   bool    `json:"is_income"`
-	IsDebt     bool    `json:"is_debt"`
-	Budgeted   float64 `json:"budgeted"`
-	Spent      float64 `json:"spent"`
-	Remaining  float64 `json:"remaining"`
+	CategoryID   int64    `json:"category_id"`
+	Name         string   `json:"name"`
+	GroupName    string   `json:"group_name,omitempty"`
+	IsIncome     bool     `json:"is_income"`
+	IsDebt       bool     `json:"is_debt"`
+	Budgeted     float64  `json:"budgeted"`
+	Spent        float64  `json:"spent"`
+	Remaining    float64  `json:"remaining"`
 	// PctUsed is nil when nothing is budgeted, so "0% used" and "no budget
 	// set" stay distinguishable.
 	PctUsed      *float64 `json:"pct_used"`
-	Transactions int      `json:"transactions"`
+	Transactions int      `json:"transactions,omitempty"`
 }
 
 // Over reports whether spending has passed the budget for this line.
@@ -62,22 +62,24 @@ func (l BudgetLine) Over() bool {
 
 // BudgetTotals aggregates a month. Debt and living partition outflow.
 type BudgetTotals struct {
-	IncomeBudgeted  float64     `json:"income_budgeted"`
-	IncomeActual    float64     `json:"income_actual"`
-	IncomeBasis     IncomeBasis `json:"income_basis"`
-	DebtBudgeted    float64     `json:"debt_budgeted"`
-	DebtSpent       float64     `json:"debt_spent"`
-	LivingBudgeted  float64     `json:"living_budgeted"`
-	LivingSpent     float64     `json:"living_spent"`
-	OutflowBudgeted float64     `json:"outflow_budgeted"`
-	OutflowSpent    float64     `json:"outflow_spent"`
+	IncomeBudgeted      float64     `json:"income_budgeted"`
+	IncomeActual        float64     `json:"income_actual"`
+	IncomeBasis         IncomeBasis `json:"income_basis"`
+	DebtBudgeted        float64     `json:"debt_budgeted"`
+	DebtSpent           float64     `json:"debt_spent"`
+	LivingBudgeted      float64     `json:"living_budgeted"`
+	LivingSpent         float64     `json:"living_spent"`
+	OutflowBudgeted     float64     `json:"outflow_budgeted"`
+	OutflowSpent        float64     `json:"outflow_spent"`
 	// PlannedSurplus is income less everything budgeted: what the month is
 	// designed to save. ActualSurplus is the same against money actually spent.
-	PlannedSurplus float64 `json:"planned_surplus"`
-	ActualSurplus  float64 `json:"actual_surplus"`
+	PlannedSurplus     float64  `json:"planned_surplus"`
+	ActualSurplus      float64  `json:"actual_surplus"`
 	// DebtShare is debt service as a fraction of income, nil without income.
-	DebtShare      *float64 `json:"debt_share"`
-	CategoriesOver int      `json:"categories_over"`
+	DebtShare          *float64 `json:"debt_share"`
+	CategoriesOver     int      `json:"categories_over"`
+	UncategorizedSpent float64  `json:"uncategorized_spent,omitempty"`
+	UncategorizedCount int64    `json:"uncategorized_count,omitempty"`
 }
 
 // BudgetReport is the top-level budget response for one month.
@@ -109,7 +111,8 @@ func (r *BudgetReport) shift(months int) string {
 
 // BudgetFetcher is the slice of the Lunch Money client the budget report needs.
 type BudgetFetcher interface {
-	GetBudgets(ctx context.Context, filters *lunchmoney.BudgetFilters) ([]*lunchmoney.Budget, error)
+	GetBudgetSummary(ctx context.Context, filters *lunchmoney.BudgetFilters) (*lunchmoney.BudgetSummary, error)
+	GetCategories(ctx context.Context, filters *lunchmoney.CategoryFilters) ([]*lunchmoney.Category, error)
 }
 
 // monthStart truncates to the first of the month, which is the only budget
@@ -122,14 +125,22 @@ func monthStart(t time.Time) time.Time {
 func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time) (*BudgetReport, error) {
 	start := monthStart(at)
 	end := start.AddDate(0, 1, -1)
-	month := start.Format("2006-01-02")
 
-	budgets, err := c.GetBudgets(ctx, &lunchmoney.BudgetFilters{
-		StartDate: month,
-		EndDate:   end.Format("2006-01-02"),
+	includeTotals := true
+	summary, err := c.GetBudgetSummary(ctx, &lunchmoney.BudgetFilters{
+		StartDate:     start.Format("2006-01-02"),
+		EndDate:       end.Format("2006-01-02"),
+		IncludeTotals: &includeTotals,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("get budgets: %w", err)
+		return nil, fmt.Errorf("get budget summary: %w", err)
+	}
+
+	categories, err := c.GetCategories(ctx, &lunchmoney.CategoryFilters{
+		Format: lunchmoney.CategoryFormatFlattened,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("get categories: %w", err)
 	}
 
 	rep := &BudgetReport{
@@ -140,34 +151,72 @@ func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time) (*Bud
 		Living:      []BudgetLine{},
 	}
 
+	groupNames := make(map[int64]string)
+	for _, cat := range categories {
+		if cat != nil && cat.IsGroup {
+			groupNames[cat.ID] = cat.Name
+		}
+	}
+
+	summaryMap := summary.CategoryMap()
 	currencies := map[string]bool{}
 	skippedExcluded := 0
 
-	for _, b := range budgets {
-		if b == nil || b.IsGroup {
-			// Groups restate their children; counting both doubles the total.
+	for _, cat := range categories {
+		if cat == nil || cat.IsGroup {
 			continue
 		}
-		if b.ExcludeFromBudget {
-			// Transfers and card payments. Real cash movement, but not
-			// spending, and including them double-counts every purchase.
+		if cat.ExcludeFromBudget {
 			skippedExcluded++
 			continue
 		}
 
-		data, ok := b.Data[month]
-		if !ok || data == nil {
-			continue
-		}
-		if data.BudgetCurrency != "" {
-			currencies[strings.ToUpper(data.BudgetCurrency)] = true
+		var groupName string
+		if cat.GroupID != nil {
+			groupName = groupNames[*cat.GroupID]
 		}
 
-		line := lineFrom(b, data)
+		budgeted := 0.0
+		spent := 0.0
+		var currency string
+
+		if sc := summaryMap[cat.ID]; sc != nil {
+			if sc.Totals.Budgeted != nil {
+				budgeted = *sc.Totals.Budgeted
+			}
+			activity := sc.Totals.OtherActivity + sc.Totals.RecurringActivity
+			if cat.IsIncome {
+				spent = math.Abs(activity)
+			} else {
+				spent = activity
+			}
+			if len(sc.Occurrences) > 0 && sc.Occurrences[0].BudgetedCurrency != "" {
+				currency = sc.Occurrences[0].BudgetedCurrency
+			}
+		}
+
+		line := BudgetLine{
+			CategoryID: cat.ID,
+			Name:       cat.Name,
+			GroupName:  groupName,
+			IsIncome:   cat.IsIncome,
+			IsDebt:     isDebt(cat.Name),
+			Budgeted:   round2(budgeted),
+			Spent:      round2(spent),
+			Remaining:  round2(budgeted - spent),
+		}
+		if line.Budgeted > 0 {
+			pct := round2(line.Spent / line.Budgeted * 100)
+			line.PctUsed = &pct
+		}
 
 		// A category with neither a budget nor activity is noise.
-		if line.Budgeted == 0 && line.Spent == 0 && line.Transactions == 0 {
+		if line.Budgeted == 0 && line.Spent == 0 {
 			continue
+		}
+
+		if currency != "" {
+			currencies[strings.ToUpper(currency)] = true
 		}
 
 		switch {
@@ -182,6 +231,14 @@ func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time) (*Bud
 
 	for _, set := range [][]BudgetLine{rep.Income, rep.Debt, rep.Living} {
 		sortLines(set)
+	}
+
+	if summary != nil && summary.Totals != nil && summary.Totals.Outflow.Uncategorized > 0 {
+		rep.Totals.UncategorizedSpent = round2(summary.Totals.Outflow.Uncategorized)
+		rep.Totals.UncategorizedCount = summary.Totals.Outflow.UncategorizedCount
+		rep.Notes = append(rep.Notes, fmt.Sprintf(
+			"%s was spent across %d uncategorized transactions this month",
+			money(rep.Totals.UncategorizedSpent), rep.Totals.UncategorizedCount))
 	}
 
 	summarizeBudget(rep, currencies)
@@ -203,47 +260,6 @@ func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time) (*Bud
 	}
 
 	return rep, nil
-}
-
-// lineFrom converts one Lunch Money budget row into a report line.
-func lineFrom(b *lunchmoney.Budget, data *lunchmoney.BudgetData) BudgetLine {
-	line := BudgetLine{
-		CategoryID:   b.CategoryID,
-		Name:         b.CategoryName,
-		GroupName:    b.CategoryGroupName,
-		IsIncome:     b.IsIncome,
-		IsDebt:       isDebt(b.CategoryName),
-		Budgeted:     round2(budgetAmount(data)),
-		Transactions: data.NumTransactions,
-	}
-
-	// Income arrives as a credit, so magnitude keeps a sign convention change
-	// upstream from silently negating the total.
-	if line.IsIncome {
-		line.Spent = round2(math.Abs(data.SpendingToBase))
-	} else {
-		line.Spent = round2(data.SpendingToBase)
-	}
-
-	line.Remaining = round2(line.Budgeted - line.Spent)
-	if line.Budgeted > 0 {
-		pct := round2(line.Spent / line.Budgeted * 100)
-		line.PctUsed = &pct
-	}
-
-	return line
-}
-
-// budgetAmount prefers the base-currency figure and falls back to the raw
-// amount, which is what a single-currency account populates.
-func budgetAmount(data *lunchmoney.BudgetData) float64 {
-	if data.BudgetToBase != 0 {
-		return data.BudgetToBase
-	}
-	if f, err := data.BudgetAmount.Float64(); err == nil {
-		return f
-	}
-	return 0
 }
 
 // sortLines orders by budget then name, so the biggest commitments lead and

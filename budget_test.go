@@ -15,31 +15,50 @@ import (
 // testMonth is the budget-period key for testNow.
 const testMonth = "2026-08-01"
 
-// budgetRow builds one Lunch Money budget row for the test month.
-func budgetRow(id int, name string, budgeted, spent float64, opts ...func(*lunchmoney.Budget)) *lunchmoney.Budget {
-	b := &lunchmoney.Budget{
-		CategoryID:   id,
-		CategoryName: name,
-		Data: map[string]*lunchmoney.BudgetData{
-			testMonth: {
-				BudgetMonth:    testMonth,
-				BudgetToBase:   budgeted,
-				BudgetAmount:   json.Number("0"),
-				BudgetCurrency: "usd",
-				SpendingToBase: spent,
+func testBudgetFixture(categories []*lunchmoney.Category, summaryCats []*lunchmoney.SummaryCategory) *fakeClient {
+	return &fakeClient{
+		categories: categories,
+		summary: &lunchmoney.BudgetSummary{
+			Categories: summaryCats,
+		},
+	}
+}
+
+func categoryRow(id int64, name string, opts ...func(*lunchmoney.Category)) *lunchmoney.Category {
+	c := &lunchmoney.Category{
+		ID:   id,
+		Name: name,
+	}
+	for _, o := range opts {
+		o(c)
+	}
+	return c
+}
+
+func summaryRow(id int64, budgeted, spent float64, currency ...string) *lunchmoney.SummaryCategory {
+	curr := "usd"
+	if len(currency) > 0 && currency[0] != "" {
+		curr = currency[0]
+	}
+	b := budgeted
+	return &lunchmoney.SummaryCategory{
+		CategoryID: id,
+		Totals: lunchmoney.SummaryCategoryTotal{
+			Budgeted:      &b,
+			OtherActivity: spent,
+		},
+		Occurrences: []lunchmoney.SummaryOccurrence{
+			{
+				BudgetedCurrency: curr,
 			},
 		},
 	}
-	for _, o := range opts {
-		o(b)
-	}
-	return b
 }
 
-func asIncome(b *lunchmoney.Budget) { b.IsIncome = true }
-func asGroup(b *lunchmoney.Budget)  { b.IsGroup = true }
-func asExcluded(b *lunchmoney.Budget) {
-	b.ExcludeFromBudget = true
+func asIncome(c *lunchmoney.Category) { c.IsIncome = true }
+func asGroup(c *lunchmoney.Category)  { c.IsGroup = true }
+func asExcluded(c *lunchmoney.Category) {
+	c.ExcludeFromBudget = true
 }
 
 func TestIsDebt(t *testing.T) {
@@ -60,13 +79,22 @@ func TestIsDebt(t *testing.T) {
 }
 
 func TestBuildBudgetReportClassifiesAndTotals(t *testing.T) {
-	c := &fakeClient{budgets: []*lunchmoney.Budget{
-		budgetRow(1, "Income", 0, -8000, asIncome),
-		budgetRow(2, "Mortgage", 2000, 2000),
-		budgetRow(3, "Student Loans", 1000, 400),
-		budgetRow(4, "Groceries", 600, 250),
-		budgetRow(5, "Restaurants and Delivery", 300, 450),
-	}}
+	c := testBudgetFixture(
+		[]*lunchmoney.Category{
+			categoryRow(1, "Income", asIncome),
+			categoryRow(2, "Mortgage"),
+			categoryRow(3, "Student Loans"),
+			categoryRow(4, "Groceries"),
+			categoryRow(5, "Restaurants and Delivery"),
+		},
+		[]*lunchmoney.SummaryCategory{
+			summaryRow(1, 0, -8000),
+			summaryRow(2, 2000, 2000),
+			summaryRow(3, 1000, 400),
+			summaryRow(4, 600, 250),
+			summaryRow(5, 300, 450),
+		},
+	)
 
 	rep, err := BuildBudgetReport(context.Background(), c, testNow)
 	if err != nil {
@@ -111,16 +139,24 @@ func TestBuildBudgetReportClassifiesAndTotals(t *testing.T) {
 }
 
 func TestBuildBudgetReportSkipsNonSpending(t *testing.T) {
-	c := &fakeClient{budgets: []*lunchmoney.Budget{
-		budgetRow(1, "Mortgage", 2000, 2000),
-		// Transfers and card payments are settlement, not spending; counting
-		// them double-counts every purchase already in another category.
-		budgetRow(2, "Payment, Transfer", 5000, 5000, asExcluded),
-		// A group restates its children.
-		budgetRow(3, "Everything", 9999, 9999, asGroup),
-		// No budget and no activity is noise.
-		budgetRow(4, "Dormant", 0, 0),
-	}}
+	c := testBudgetFixture(
+		[]*lunchmoney.Category{
+			categoryRow(1, "Mortgage"),
+			// Transfers and card payments are settlement, not spending; counting
+			// them double-counts every purchase already in another category.
+			categoryRow(2, "Payment, Transfer", asExcluded),
+			// A group restates its children.
+			categoryRow(3, "Everything", asGroup),
+			// No budget and no activity is noise.
+			categoryRow(4, "Dormant"),
+		},
+		[]*lunchmoney.SummaryCategory{
+			summaryRow(1, 2000, 2000),
+			summaryRow(2, 5000, 5000),
+			summaryRow(3, 9999, 9999),
+			summaryRow(4, 0, 0),
+		},
+	)
 
 	rep, err := BuildBudgetReport(context.Background(), c, testNow)
 	if err != nil {
@@ -147,10 +183,16 @@ func TestBuildBudgetReportSkipsNonSpending(t *testing.T) {
 
 func TestBuildBudgetReportIncomeBasis(t *testing.T) {
 	t.Run("falls back to actual when no income is budgeted", func(t *testing.T) {
-		c := &fakeClient{budgets: []*lunchmoney.Budget{
-			budgetRow(1, "Income", 0, -5000, asIncome),
-			budgetRow(2, "Groceries", 400, 100),
-		}}
+		c := testBudgetFixture(
+			[]*lunchmoney.Category{
+				categoryRow(1, "Income", asIncome),
+				categoryRow(2, "Groceries"),
+			},
+			[]*lunchmoney.SummaryCategory{
+				summaryRow(1, 0, -5000),
+				summaryRow(2, 400, 100),
+			},
+		)
 
 		rep, err := BuildBudgetReport(context.Background(), c, testNow)
 		if err != nil {
@@ -174,11 +216,17 @@ func TestBuildBudgetReportIncomeBasis(t *testing.T) {
 	})
 
 	t.Run("prefers a budgeted figure when one exists", func(t *testing.T) {
-		c := &fakeClient{budgets: []*lunchmoney.Budget{
-			// Mid-month: only part of the month's income has landed.
-			budgetRow(1, "Income", 6000, -1000, asIncome),
-			budgetRow(2, "Groceries", 400, 100),
-		}}
+		c := testBudgetFixture(
+			[]*lunchmoney.Category{
+				// Mid-month: only part of the month's income has landed.
+				categoryRow(1, "Income", asIncome),
+				categoryRow(2, "Groceries"),
+			},
+			[]*lunchmoney.SummaryCategory{
+				summaryRow(1, 6000, -1000),
+				summaryRow(2, 400, 100),
+			},
+		)
 
 		rep, err := BuildBudgetReport(context.Background(), c, testNow)
 		if err != nil {
@@ -194,7 +242,7 @@ func TestBuildBudgetReportIncomeBasis(t *testing.T) {
 }
 
 func TestBuildBudgetReportRequestsTheCurrentMonth(t *testing.T) {
-	c := &fakeClient{}
+	c := testBudgetFixture(nil, nil)
 	if _, err := BuildBudgetReport(context.Background(), c, testNow); err != nil {
 		t.Fatalf("BuildBudgetReport: %v", err)
 	}
@@ -211,19 +259,26 @@ func TestBuildBudgetReportRequestsTheCurrentMonth(t *testing.T) {
 }
 
 func TestBuildBudgetReportPropagatesError(t *testing.T) {
-	c := &fakeClient{budgetsErr: errors.New("upstream is down")}
+	c := &fakeClient{summaryErr: errors.New("upstream is down")}
 	if _, err := BuildBudgetReport(context.Background(), c, testNow); err == nil {
 		t.Fatal("want an error when budgets cannot be read")
 	}
 }
 
 func TestBudgetLinePctAndOver(t *testing.T) {
-	c := &fakeClient{budgets: []*lunchmoney.Budget{
-		budgetRow(1, "Half spent", 1000, 500),
-		budgetRow(2, "Overspent", 100, 250),
-		// Spending with nothing budgeted: percent is unknowable, not zero.
-		budgetRow(3, "Unbudgeted", 0, 75),
-	}}
+	c := testBudgetFixture(
+		[]*lunchmoney.Category{
+			categoryRow(1, "Half spent"),
+			categoryRow(2, "Overspent"),
+			// Spending with nothing budgeted: percent is unknowable, not zero.
+			categoryRow(3, "Unbudgeted"),
+		},
+		[]*lunchmoney.SummaryCategory{
+			summaryRow(1, 1000, 500),
+			summaryRow(2, 100, 250),
+			summaryRow(3, 0, 75),
+		},
+	)
 
 	rep, err := BuildBudgetReport(context.Background(), c, testNow)
 	if err != nil {
@@ -247,9 +302,10 @@ func TestBudgetLinePctAndOver(t *testing.T) {
 }
 
 func TestHandleBudgetReturnsJSON(t *testing.T) {
-	c := &fakeClient{budgets: []*lunchmoney.Budget{
-		budgetRow(1, "Mortgage", 2000, 2000),
-	}}
+	c := testBudgetFixture(
+		[]*lunchmoney.Category{categoryRow(1, "Mortgage")},
+		[]*lunchmoney.SummaryCategory{summaryRow(1, 2000, 2000)},
+	)
 	h := testServer(c, fixedNow(testNow))
 
 	w := httptest.NewRecorder()
@@ -272,15 +328,20 @@ func TestHandleBudgetReturnsJSON(t *testing.T) {
 }
 
 func TestHandleDashboardRendersHTML(t *testing.T) {
-	c := &fakeClient{
-		budgets: []*lunchmoney.Budget{
-			budgetRow(1, "Income", 0, -8000, asIncome),
-			budgetRow(2, "Mortgage", 2000, 2000),
-			budgetRow(3, "Groceries", 600, 700),
+	c := testBudgetFixture(
+		[]*lunchmoney.Category{
+			categoryRow(1, "Income", asIncome),
+			categoryRow(2, "Mortgage"),
+			categoryRow(3, "Groceries"),
 		},
-		assets: []*lunchmoney.Asset{
-			{ID: 1, TypeName: "loan", Name: "Example Note", Balance: "12345.0000", Currency: "usd", Status: "active"},
+		[]*lunchmoney.SummaryCategory{
+			summaryRow(1, 0, -8000),
+			summaryRow(2, 2000, 2000),
+			summaryRow(3, 600, 700),
 		},
+	)
+	c.manualAccounts = []*lunchmoney.ManualAccount{
+		manualAccount(1, "loan", "Example Note", "12345.0000", "active"),
 	}
 	h := testServer(c, fixedNow(testNow))
 
@@ -315,10 +376,11 @@ func TestHandleDashboardRendersHTML(t *testing.T) {
 
 func TestHandleDashboardSurvivesOneUpstreamFailure(t *testing.T) {
 	// Loans fail, budget succeeds: the page should still render the budget.
-	c := &fakeClient{
-		budgets:   []*lunchmoney.Budget{budgetRow(1, "Mortgage", 2000, 2000)},
-		assetsErr: errors.New("assets are down"),
-	}
+	c := testBudgetFixture(
+		[]*lunchmoney.Category{categoryRow(1, "Mortgage")},
+		[]*lunchmoney.SummaryCategory{summaryRow(1, 2000, 2000)},
+	)
+	c.manualErr = errors.New("assets are down")
 	h := testServer(c, fixedNow(testNow))
 
 	w := httptest.NewRecorder()
