@@ -335,7 +335,7 @@ func runCLI(ctx context.Context, client Fetcher, overrides map[string]float64, m
 	}
 
 	opts := Options{IncludeCredit: true, Overrides: overrides}
-	loanRep, err := BuildReport(ctx, client, now, opts)
+	loanRep, err := BuildReport(ctx, client, at, opts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error fetching loan report: %v\n", err)
 		return 1
@@ -367,6 +367,9 @@ func printCLIReport(budget *BudgetReport, loans *Report) {
 	fmt.Printf("  Income Budgeted:   %s  (Actual: %s)\n", money(bt.IncomeBudgeted), money(bt.IncomeActual))
 	fmt.Printf("  Debt Budgeted:     %s  (Spent:  %s)\n", money(bt.DebtBudgeted), money(bt.DebtSpent))
 	fmt.Printf("  Living Budgeted:   %s  (Spent:  %s)\n", money(bt.LivingBudgeted), money(bt.LivingSpent))
+	if bt.UncategorizedSpent > 0 {
+		fmt.Printf("  Uncategorized:     —  (Spent:  %s across %d txs)\n", money(bt.UncategorizedSpent), bt.UncategorizedCount)
+	}
 	fmt.Printf("  Total Outflow:     %s  (Spent:  %s)\n", money(bt.OutflowBudgeted), money(bt.OutflowSpent))
 	fmt.Printf("  Planned Surplus:   %s\n", money(bt.PlannedSurplus))
 	fmt.Printf("  Actual Surplus:    %s\n\n", money(bt.ActualSurplus))
@@ -416,7 +419,7 @@ func printCLIReport(budget *BudgetReport, loans *Report) {
 
 	lt := loans.Totals
 	fmt.Println("DEBT & ACCOUNTS")
-	if lt.LiquidCash > 0 {
+	if lt.Balance > 0 || lt.LiquidCash > 0 || lt.CreditUtilization != nil {
 		fmt.Printf("  Total Debt: %s | Liquid Cash: %s | Net Debt: %s\n", money(lt.Balance), money(lt.LiquidCash), money(lt.NetDebt))
 		if lt.CreditUtilization != nil {
 			fmt.Printf("  Revolving Credit Utilization: %.0f%% (%s / %s)\n", *lt.CreditUtilization, money(lt.TotalCreditBalance), money(lt.TotalCreditLimit))

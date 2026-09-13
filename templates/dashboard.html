@@ -144,6 +144,17 @@
             <td class="num">{{money (sub $t.LivingBudgeted $t.LivingSpent)}}</td><td></td><td></td>
           </tr>{{end}}
 
+          {{if gt $t.UncategorizedSpent 0.0}}
+          <tr>
+            <td>Uncategorized</td>
+            <td class="num">—</td>
+            <td class="num bad">{{money $t.UncategorizedSpent}}</td>
+            <td class="num">{{money (neg $t.UncategorizedSpent)}}</td>
+            <td class="num" style="font-size:0.8rem;color:var(--faint)">—</td>
+            <td></td>
+          </tr>
+          {{end}}
+
           <tr class="sum">
             <td>Total Outflow</td><td class="num">{{money $t.OutflowBudgeted}}</td>
             <td class="num">{{money $t.OutflowSpent}}</td>
@@ -164,26 +175,28 @@
   {{with .LoansErr}}<div class="err">{{.}}</div>{{end}}
 
   {{with .Loans}}
+  {{$loans := .}}
+  {{$lt := .Totals}}
   <section>
     <h2>Debt &amp; Accounts</h2>
-    {{if gt .Totals.LiquidCash 0.0}}
+    {{if or (gt $lt.Balance 0.0) (gt $lt.LiquidCash 0.0) $lt.CreditUtilization}}
     <div class="figs" style="margin-bottom:1.25rem">
       <div class="fig">
-        <b class="num">{{money .Totals.Balance}}</b>
+        <b class="num">{{money $lt.Balance}}</b>
         <span>total debt</span>
       </div>
       <div class="fig">
-        <b class="num good">{{money .Totals.LiquidCash}}</b>
+        <b class="num good">{{money $lt.LiquidCash}}</b>
         <span>liquid cash (checking &amp; savings)</span>
       </div>
       <div class="fig">
-        <b class="num {{if gt .Totals.NetDebt 0.0}}bad{{else}}good{{end}}">{{money .Totals.NetDebt}}</b>
+        <b class="num {{if gt $lt.NetDebt 0.0}}bad{{else}}good{{end}}">{{money $lt.NetDebt}}</b>
         <span>net debt (debt − cash)</span>
       </div>
-      {{with .Totals.CreditUtilization}}
+      {{with $util := $lt.CreditUtilization}}
       <div class="fig">
-        <b class="num {{if gt . 30.0}}bad{{else}}good{{end}}">{{pct .}}</b>
-        <span>revolving credit utilization ({{money $.Totals.TotalCreditBalance}} / {{money $.Totals.TotalCreditLimit}})</span>
+        <b class="num {{if overLimit $util 30.0}}bad{{else}}good{{end}}">{{pct $util}}</b>
+        <span>revolving credit utilization ({{money $lt.TotalCreditBalance}} / {{money $lt.TotalCreditLimit}})</span>
       </div>
       {{end}}
     </div>

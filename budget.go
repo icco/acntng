@@ -115,6 +115,11 @@ type BudgetFetcher interface {
 	GetCategories(ctx context.Context, filters *lunchmoney.CategoryFilters) ([]*lunchmoney.Category, error)
 }
 
+// UserFetcher optionally retrieves user profile details like primary currency.
+type UserFetcher interface {
+	GetUser(ctx context.Context) (*lunchmoney.User, error)
+}
+
 // monthStart truncates to the first of the month, which is the only budget
 // period start Lunch Money accepts for a monthly budget.
 func monthStart(t time.Time) time.Time {
@@ -143,6 +148,13 @@ func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time) (*Bud
 		return nil, fmt.Errorf("get categories: %w", err)
 	}
 
+	var primaryCurrency string
+	if uf, ok := c.(UserFetcher); ok {
+		if u, err := uf.GetUser(ctx); err == nil && u != nil && u.PrimaryCurrency != "" {
+			primaryCurrency = strings.ToUpper(strings.TrimSpace(u.PrimaryCurrency))
+		}
+	}
+
 	rep := &BudgetReport{
 		GeneratedAt: at.UTC(),
 		Month:       start.Format("2006-01"),
@@ -159,7 +171,6 @@ func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time) (*Bud
 	}
 
 	summaryMap := summary.CategoryMap()
-	currencies := map[string]bool{}
 	skippedExcluded := 0
 
 	for _, cat := range categories {
@@ -178,7 +189,6 @@ func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time) (*Bud
 
 		budgeted := 0.0
 		spent := 0.0
-		var currency string
 
 		if sc := summaryMap[cat.ID]; sc != nil {
 			if sc.Totals.Budgeted != nil {
@@ -189,9 +199,6 @@ func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time) (*Bud
 				spent = math.Abs(activity)
 			} else {
 				spent = activity
-			}
-			if len(sc.Occurrences) > 0 && sc.Occurrences[0].BudgetedCurrency != "" {
-				currency = sc.Occurrences[0].BudgetedCurrency
 			}
 		}
 
@@ -215,10 +222,6 @@ func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time) (*Bud
 			continue
 		}
 
-		if currency != "" {
-			currencies[strings.ToUpper(currency)] = true
-		}
-
 		switch {
 		case line.IsIncome:
 			rep.Income = append(rep.Income, line)
@@ -233,15 +236,18 @@ func BuildBudgetReport(ctx context.Context, c BudgetFetcher, at time.Time) (*Bud
 		sortLines(set)
 	}
 
-	if summary != nil && summary.Totals != nil && summary.Totals.Outflow.Uncategorized > 0 {
-		rep.Totals.UncategorizedSpent = round2(summary.Totals.Outflow.Uncategorized)
-		rep.Totals.UncategorizedCount = summary.Totals.Outflow.UncategorizedCount
-		rep.Notes = append(rep.Notes, fmt.Sprintf(
-			"%s was spent across %d uncategorized transactions this month",
-			money(rep.Totals.UncategorizedSpent), rep.Totals.UncategorizedCount))
+	if summary != nil && summary.Totals != nil {
+		uncat := summary.Totals.Outflow.Uncategorized + summary.Totals.Outflow.UncategorizedRecurring
+		if uncat > 0 {
+			rep.Totals.UncategorizedSpent = round2(uncat)
+			rep.Totals.UncategorizedCount = summary.Totals.Outflow.UncategorizedCount
+			rep.Notes = append(rep.Notes, fmt.Sprintf(
+				"%s was spent across %d uncategorized transactions this month",
+				money(rep.Totals.UncategorizedSpent), rep.Totals.UncategorizedCount))
+		}
 	}
 
-	summarizeBudget(rep, currencies)
+	summarizeBudget(rep, primaryCurrency)
 
 	if skippedExcluded > 0 {
 		rep.Notes = append(rep.Notes, fmt.Sprintf(
@@ -277,7 +283,7 @@ func sortLines(lines []BudgetLine) {
 }
 
 // summarizeBudget fills in totals and flags what makes them misleading.
-func summarizeBudget(rep *BudgetReport, currencies map[string]bool) {
+func summarizeBudget(rep *BudgetReport, primaryCurrency string) {
 	t := &rep.Totals
 
 	for _, l := range rep.Income {
@@ -300,7 +306,8 @@ func summarizeBudget(rep *BudgetReport, currencies map[string]bool) {
 	}
 
 	t.OutflowBudgeted = round2(t.DebtBudgeted + t.LivingBudgeted)
-	t.OutflowSpent = round2(t.DebtSpent + t.LivingSpent)
+	// Uncategorized outflow is spending and must be counted in OutflowSpent to keep ActualSurplus accurate.
+	t.OutflowSpent = round2(t.DebtSpent + t.LivingSpent + t.UncategorizedSpent)
 	t.IncomeBudgeted = round2(t.IncomeBudgeted)
 	t.IncomeActual = round2(t.IncomeActual)
 	t.DebtBudgeted = round2(t.DebtBudgeted)
@@ -325,20 +332,9 @@ func summarizeBudget(rep *BudgetReport, currencies map[string]bool) {
 		t.DebtShare = &share
 	}
 
-	switch len(currencies) {
-	case 0:
-	case 1:
-		for c := range currencies {
-			rep.Currency = c
-		}
-	default:
-		list := make([]string, 0, len(currencies))
-		for c := range currencies {
-			list = append(list, c)
-		}
-		sort.Strings(list)
-		rep.Notes = append(rep.Notes, fmt.Sprintf(
-			"budgets span multiple currencies (%s); totals are a raw sum and not converted",
-			strings.Join(list, ", ")))
+	if primaryCurrency != "" {
+		rep.Currency = primaryCurrency
+	} else if rep.Currency == "" {
+		rep.Currency = "USD"
 	}
 }

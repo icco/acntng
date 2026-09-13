@@ -413,3 +413,59 @@ func TestMoneyFormatting(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildBudgetReportPrimaryCurrencyFromUser(t *testing.T) {
+	c := testBudgetFixture(
+		[]*lunchmoney.Category{categoryRow(1, "Mortgage")},
+		[]*lunchmoney.SummaryCategory{summaryRow(1, 2000, 2000)},
+	)
+	c.user = &lunchmoney.User{PrimaryCurrency: "cad"}
+
+	rep, err := BuildBudgetReport(context.Background(), c, testNow)
+	if err != nil {
+		t.Fatalf("BuildBudgetReport: %v", err)
+	}
+	if rep.Currency != "CAD" {
+		t.Errorf("currency = %q, want CAD (from user profile)", rep.Currency)
+	}
+}
+
+func TestBuildBudgetReportUncategorizedOutflowIncludedInTotals(t *testing.T) {
+	c := testBudgetFixture(
+		[]*lunchmoney.Category{
+			categoryRow(1, "Income", asIncome),
+			categoryRow(2, "Mortgage"),
+		},
+		[]*lunchmoney.SummaryCategory{
+			summaryRow(1, 0, -5000),
+			summaryRow(2, 2000, 2000),
+		},
+	)
+	c.summary.Totals = &lunchmoney.SummaryTotals{
+		Outflow: lunchmoney.SummaryTotalsBreakdown{
+			Uncategorized:          350.50,
+			UncategorizedRecurring: 50.00,
+			UncategorizedCount:     4,
+		},
+	}
+
+	rep, err := BuildBudgetReport(context.Background(), c, testNow)
+	if err != nil {
+		t.Fatalf("BuildBudgetReport: %v", err)
+	}
+
+	// Categorized debt outflow = 2000. Uncategorized = 400.50. Total outflow = 2400.50.
+	if rep.Totals.UncategorizedSpent != 400.50 {
+		t.Errorf("uncategorized spent = %v, want 400.50", rep.Totals.UncategorizedSpent)
+	}
+	if rep.Totals.UncategorizedCount != 4 {
+		t.Errorf("uncategorized count = %v, want 4", rep.Totals.UncategorizedCount)
+	}
+	if rep.Totals.OutflowSpent != 2400.50 {
+		t.Errorf("outflow spent = %v, want 2400.50 (including uncategorized)", rep.Totals.OutflowSpent)
+	}
+	// Income actual = 5000. Outflow spent = 2400.50. Actual surplus = 2599.50.
+	if rep.Totals.ActualSurplus != 2599.50 {
+		t.Errorf("actual surplus = %v, want 2599.50", rep.Totals.ActualSurplus)
+	}
+}

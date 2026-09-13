@@ -158,6 +158,7 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 	}
 
 	var liquidCash float64
+	cashCurrencies := map[string]bool{}
 	for _, a := range manualAccounts {
 		if a == nil || isClosed(a.Status) {
 			continue
@@ -167,6 +168,9 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 			bal := parseAmount(a.Balance)
 			if bal > 0 {
 				liquidCash += bal
+				if a.Currency != "" {
+					cashCurrencies[strings.ToUpper(a.Currency)] = true
+				}
 			}
 		}
 		if !opts.wantType(a.Type) {
@@ -184,6 +188,9 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 			bal := parseAmount(p.Balance)
 			if bal > 0 {
 				liquidCash += bal
+				if p.Currency != "" {
+					cashCurrencies[strings.ToUpper(p.Currency)] = true
+				}
 			}
 		}
 		if !opts.wantType(p.Type) {
@@ -203,7 +210,7 @@ func BuildReport(ctx context.Context, c LoanFetcher, now time.Time, opts Options
 		return report.Loans[i].Name < report.Loans[j].Name
 	})
 
-	summarize(report)
+	summarize(report, cashCurrencies)
 
 	return report, nil
 }
@@ -262,10 +269,9 @@ func loanFromPlaid(p *lunchmoney.PlaidAccount) Loan {
 	if p.Limit != nil && *p.Limit > 0 {
 		lim := round2(*p.Limit)
 		l.CreditLimit = &lim
-		if l.Balance > 0 {
-			u := round2((l.Balance / *p.Limit) * 100)
-			l.Utilization = &u
-		}
+		bal := math.Max(l.Balance, 0)
+		u := round2((bal / *p.Limit) * 100)
+		l.Utilization = &u
 	}
 	return l
 }
@@ -486,8 +492,11 @@ func normalize(s string) string {
 }
 
 // summarize fills in totals and flags anything that makes them misleading.
-func summarize(rep *Report) {
+func summarize(rep *Report, cashCurrencies map[string]bool) {
 	currencies := map[string]bool{}
+	for c := range cashCurrencies {
+		currencies[c] = true
+	}
 	var totalCreditLimit, totalCreditBalance float64
 
 	for _, l := range rep.Loans {
@@ -500,7 +509,8 @@ func summarize(rep *Report) {
 		if strings.ToLower(l.Type) == "credit" {
 			if l.CreditLimit != nil && *l.CreditLimit > 0 {
 				totalCreditLimit += *l.CreditLimit
-				totalCreditBalance += l.Balance
+				// Negative balances on overpaid cards should not offset other cards in aggregate utilization.
+				totalCreditBalance += math.Max(l.Balance, 0)
 			}
 		}
 

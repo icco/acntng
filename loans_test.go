@@ -17,12 +17,14 @@ type fakeClient struct {
 	recurring      []*lunchmoney.RecurringItem
 	summary        *lunchmoney.BudgetSummary
 	categories     []*lunchmoney.Category
+	user           *lunchmoney.User
 
 	manualErr     error
 	plaidErr      error
 	recurringErr  error
 	summaryErr    error
 	categoriesErr error
+	userErr       error
 
 	gotFilters         *lunchmoney.RecurringItemFilters
 	gotBudgetFilters   *lunchmoney.BudgetFilters
@@ -50,6 +52,10 @@ func (f *fakeClient) GetBudgetSummary(_ context.Context, filters *lunchmoney.Bud
 func (f *fakeClient) GetCategories(_ context.Context, filters *lunchmoney.CategoryFilters) ([]*lunchmoney.Category, error) {
 	f.gotCategoryFilters = filters
 	return f.categories, f.categoriesErr
+}
+
+func (f *fakeClient) GetUser(context.Context) (*lunchmoney.User, error) {
+	return f.user, f.userErr
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -618,5 +624,78 @@ func TestNormalize(t *testing.T) {
 		if got := normalize(tt.in); got != tt.want {
 			t.Errorf("normalize(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestCreditUtilizationZeroAndNegativeBalances(t *testing.T) {
+	lim1 := 5000.0
+	lim2 := 2000.0
+	lim3 := 4000.0
+	c := &fakeClient{
+		plaid: []*lunchmoney.PlaidAccount{
+			{ID: 1, Type: "credit", Name: "Card Zero", Balance: "0.0000", Currency: "usd", Status: "active", Limit: &lim1},
+			{ID: 2, Type: "credit", Name: "Card Negative", Balance: "-100.0000", Currency: "usd", Status: "active", Limit: &lim2},
+			{ID: 3, Type: "credit", Name: "Card Positive", Balance: "1000.0000", Currency: "usd", Status: "active", Limit: &lim3},
+		},
+	}
+
+	rep, err := BuildReport(context.Background(), c, testNow, Options{IncludeCredit: true})
+	if err != nil {
+		t.Fatalf("BuildReport: %v", err)
+	}
+
+	for _, l := range rep.Loans {
+		switch l.Name {
+		case "Card Zero":
+			if l.Utilization == nil || *l.Utilization != 0 {
+				t.Errorf("Card Zero util = %v, want 0%%", l.Utilization)
+			}
+		case "Card Negative":
+			if l.Utilization == nil || *l.Utilization != 0 {
+				t.Errorf("Card Negative util = %v, want 0%%", l.Utilization)
+			}
+		case "Card Positive":
+			if l.Utilization == nil || *l.Utilization != 25 {
+				t.Errorf("Card Positive util = %v, want 25%%", l.Utilization)
+			}
+		}
+	}
+
+	if rep.Totals.TotalCreditBalance != 1000 {
+		t.Errorf("totals.credit_balance = %v, want 1000 (negative balance clamped)", rep.Totals.TotalCreditBalance)
+	}
+	if rep.Totals.TotalCreditLimit != 11000 {
+		t.Errorf("totals.credit_limit = %v, want 11000", rep.Totals.TotalCreditLimit)
+	}
+	if rep.Totals.CreditUtilization == nil || *rep.Totals.CreditUtilization != 9.09 {
+		t.Errorf("totals.credit_utilization = %v, want 9.09%%", rep.Totals.CreditUtilization)
+	}
+}
+
+func TestMixedCurrencyFromCashAccounts(t *testing.T) {
+	c := &fakeClient{
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "US Loan", "1000.0000", "active"),
+			manualAccount(2, "cash", "EUR Checking", "2000.0000", "active"),
+		},
+	}
+	c.manualAccounts[1].Currency = "eur"
+
+	rep, err := BuildReport(context.Background(), c, testNow, Options{})
+	if err != nil {
+		t.Fatalf("BuildReport: %v", err)
+	}
+
+	if rep.Currency != "" {
+		t.Errorf("currency = %q, want empty for mixed cash/loan currency", rep.Currency)
+	}
+	var found bool
+	for _, n := range rep.Notes {
+		if strings.Contains(n, "multiple currencies") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("want a note flagging multiple currencies from cash, got %v", rep.Notes)
 	}
 }

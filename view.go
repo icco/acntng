@@ -84,7 +84,9 @@ func viewFuncs() template.FuncMap {
 		"stamp": func(t time.Time) string {
 			return t.Format("2 Jan 2006 15:04 MST")
 		},
-		"sub": func(a, b float64) float64 { return a - b },
+		"sub":       func(a, b float64) float64 { return a - b },
+		"neg":       func(f float64) float64 { return -f },
+		"overLimit": func(p *float64, threshold float64) bool { return p != nil && *p > threshold },
 		// tight marks a category close enough to its limit to be worth a
 		// second colour before it actually goes over.
 		"tight": func(p *float64) bool { return p != nil && *p >= tightThreshold && *p <= 100 },
