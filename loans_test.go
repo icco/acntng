@@ -162,6 +162,7 @@ func TestBuildReportFiltersToLoansOnly(t *testing.T) {
 			plaidAccount(10, "loan", "mortgage", "Mortgage", "250000.0000", "active"),
 			plaidAccount(11, "credit", "credit card", "Amex", "1200.0000", "active"),
 			plaidAccount(12, "depository", "", "Savings", "9000.0000", "active"),
+			plaidAccount(13, "loan", "mortgage", "Old Mortgage", "0.0000", "closed"),
 		},
 	}
 

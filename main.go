@@ -382,7 +382,7 @@ func printCLIReport(budget *BudgetReport, loans *Report) {
 			}
 			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", l.Name, money(l.Budgeted), money(l.Spent), money(l.Remaining), pctStr)
 		}
-		w.Flush()
+		_ = w.Flush()
 		fmt.Println()
 	}
 
@@ -396,7 +396,7 @@ func printCLIReport(budget *BudgetReport, loans *Report) {
 			}
 			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", l.Name, money(l.Budgeted), money(l.Spent), money(l.Remaining), pctStr)
 		}
-		w.Flush()
+		_ = w.Flush()
 		fmt.Println()
 	}
 
@@ -410,7 +410,7 @@ func printCLIReport(budget *BudgetReport, loans *Report) {
 			}
 			fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\n", l.Name, money(l.Budgeted), money(l.Spent), money(l.Remaining), pctStr)
 		}
-		w.Flush()
+		_ = w.Flush()
 		fmt.Println()
 	}
 
@@ -445,7 +445,7 @@ func printCLIReport(budget *BudgetReport, loans *Report) {
 		fmt.Fprintf(w, "  %s\t%s\t%s\t%s\t%s\t%s\n", name, money(l.Balance), limStr, utilStr, moStr, l.PaymentSource)
 	}
 	fmt.Fprintf(w, "  TOTAL (%d accounts)\t%s\t%s\t%s\t%s\t\n", lt.Count, money(lt.Balance), money(lt.TotalCreditLimit), utilStrOrEmpty(lt.CreditUtilization), money(lt.MonthlyPayment))
-	w.Flush()
+	_ = w.Flush()
 	fmt.Println()
 
 	if len(budget.Notes) > 0 || len(loans.Notes) > 0 {

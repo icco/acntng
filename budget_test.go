@@ -35,11 +35,7 @@ func categoryRow(id int64, name string, opts ...func(*lunchmoney.Category)) *lun
 	return c
 }
 
-func summaryRow(id int64, budgeted, spent float64, currency ...string) *lunchmoney.SummaryCategory {
-	curr := "usd"
-	if len(currency) > 0 && currency[0] != "" {
-		curr = currency[0]
-	}
+func summaryRow(id int64, budgeted, spent float64) *lunchmoney.SummaryCategory {
 	b := budgeted
 	return &lunchmoney.SummaryCategory{
 		CategoryID: id,
@@ -49,7 +45,7 @@ func summaryRow(id int64, budgeted, spent float64, currency ...string) *lunchmon
 		},
 		Occurrences: []lunchmoney.SummaryOccurrence{
 			{
-				BudgetedCurrency: curr,
+				BudgetedCurrency: "usd",
 			},
 		},
 	}
