@@ -4,7 +4,7 @@ go 1.26.2
 
 require (
 	github.com/go-chi/chi/v5 v5.3.2
-	github.com/icco/gutil v1.0.21
+	github.com/icco/gutil v1.0.24
 	github.com/icco/lunchmoney v0.17.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/unrolled/secure v1.17.0
