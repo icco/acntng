@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/icco/gutil/logging"
-	"github.com/icco/gutil/render"
+	"go.icco.me/gutil/logging"
+	"go.icco.me/gutil/render"
 	"go.uber.org/zap"
 )
 

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/icco/lunchmoney"
+	"go.icco.me/lunchmoney"
 )
 
 // fakeClient serves canned Lunch Money data.

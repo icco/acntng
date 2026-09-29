@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/icco/lunchmoney"
+	"go.icco.me/lunchmoney"
 )
 
 // Source says which Lunch Money collection a loan came from.
