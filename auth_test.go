@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/icco/lunchmoney"
+	"go.icco.me/lunchmoney"
 	"go.uber.org/zap"
 )
 

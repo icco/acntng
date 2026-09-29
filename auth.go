@@ -4,8 +4,8 @@ import (
 	"crypto/subtle"
 	"net/http"
 
-	"github.com/icco/gutil/logging"
-	"github.com/icco/gutil/render"
+	"go.icco.me/gutil/logging"
+	"go.icco.me/gutil/render"
 )
 
 const sharedKeyHeader = "X-Acntng-Key"

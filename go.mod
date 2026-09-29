@@ -4,10 +4,10 @@ go 1.26.2
 
 require (
 	github.com/go-chi/chi/v5 v5.3.2
-	github.com/icco/gutil v1.0.24
-	github.com/icco/lunchmoney v0.17.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/unrolled/secure v1.17.0
+	go.icco.me/gutil v1.0.27-0.20260929105600-f3e11752b837
+	go.icco.me/lunchmoney v0.17.2-0.20260929110925-0f5ec481b163
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.71.0
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/exporters/prometheus v0.68.0
@@ -34,7 +34,7 @@ require (
 	github.com/prometheus/common v0.71.0 // indirect
 	github.com/prometheus/otlptranslator v1.0.0 // indirect
 	github.com/prometheus/procfs v0.22.0 // indirect
-	github.com/unrolled/render v1.7.0 // indirect
+	github.com/unrolled/render v1.8.1 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/otel/metric v1.46.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.46.0 // indirect

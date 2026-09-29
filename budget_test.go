@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/icco/lunchmoney"
+	"go.icco.me/lunchmoney"
 )
 
 // testMonth is the budget-period key for testNow.

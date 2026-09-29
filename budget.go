@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/icco/lunchmoney"
+	"go.icco.me/lunchmoney"
 )
 
 // debtCategories splits debt service out of everyday spending. Lunch Money has
