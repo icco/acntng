@@ -4,7 +4,7 @@ Guidance for coding agents working on acntng.
 
 ## Project Overview
 
-Personal double-entry accounting web dashboard and CLI reporting tool written in Go (`github.com/icco/acntng`).
+Personal double-entry accounting web dashboard and CLI reporting tool written in Go (`go.icco.me/acntng`).
 
 ## Commands (Taskfile)
 

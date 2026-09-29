@@ -1,4 +1,4 @@
-module github.com/icco/acntng
+module go.icco.me/acntng
 
 go 1.26.2
 
