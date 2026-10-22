@@ -19,7 +19,7 @@ LABEL org.opencontainers.image.source=https://github.com/icco/acntng
 LABEL org.opencontainers.image.description="loan balances and monthly payments from lunch money"
 LABEL org.opencontainers.image.licenses=MIT
 
-RUN apk add --no-cache ca-certificates tzdata
+RUN apk upgrade --no-cache ca-certificates ca-certificates-bundle && apk add --no-cache ca-certificates tzdata
 RUN adduser -S -u 1001 app
 
 WORKDIR /app
