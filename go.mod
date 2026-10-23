@@ -3,7 +3,7 @@ module go.icco.me/acntng
 go 1.26.2
 
 require (
-	github.com/go-chi/chi/v5 v5.4.0
+	github.com/go-chi/chi/v5 v5.5.0
 	github.com/prometheus/client_golang v1.25.0
 	github.com/unrolled/secure v1.17.0
 	go.icco.me/gutil v1.0.28
