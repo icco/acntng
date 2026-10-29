@@ -53,10 +53,10 @@ github.com/unrolled/render v1.8.1 h1:hUqbfl8e82kD+f39PCDCVcTRUL8lTVUzfxCgxp1FYVY
 github.com/unrolled/render v1.8.1/go.mod h1:nQ5rv5B38X4Xb3Vtx6tRVle+Vcy0XbcunTkxIWVKmc8=
 github.com/unrolled/secure v1.17.0 h1:Io7ifFgo99Bnh0J7+Q+qcMzWM6kaDPCA5FroFZEdbWU=
 github.com/unrolled/secure v1.17.0/go.mod h1:BmF5hyM6tXczk3MpQkFf1hpKSRqCyhqcbiQtiAF7+40=
-go.icco.me/gutil v1.0.28 h1:QN1/KAI0ufQDqIfJOtVgSwD4f2SnedNnj7LfmkgIk/g=
-go.icco.me/gutil v1.0.28/go.mod h1:PzpU5Y1fEUQqozfc/HZucdh79+vhAmi6bWRUH2YFC98=
-go.icco.me/lunchmoney v0.17.2 h1:7Khzk7nnZ1/dfekWTngegk7XoKwbPo6T69CYlVRl5mw=
-go.icco.me/lunchmoney v0.17.2/go.mod h1:uN3Q3MEWQH3DMrnSpuxLt+UHbjsNYwNGtarHKQPXoPA=
+go.icco.me/gutil v1.0.35 h1:DWb5QLinFp79F6BysZmpX1CY3yiBpxpZUZHupOPrySY=
+go.icco.me/gutil v1.0.35/go.mod h1:pgBI5QoaCrldAW3NUs8sqIzzcw8C3x+SZa+JV3Wk3Uw=
+go.icco.me/lunchmoney v0.17.5 h1:5soR5+zgFlCYiz20dOA8czRu1wu4gFPPO9fwQVQ6jGU=
+go.icco.me/lunchmoney v0.17.5/go.mod h1:Ln2PAi4VRDiIXXlg6nJvAXb0CpvlXXQwtAsKOfs+2ks=
 go.opentelemetry.io/auto/sdk v1.2.1 h1:jXsnJ4Lmnqd11kwkBV2LgLoFMZKizbCi5fNZ/ipaZ64=
 go.opentelemetry.io/auto/sdk v1.2.1/go.mod h1:KRTj+aOaElaLi+wW1kO/DZRXwkF4C5xPbEe3ZiIhN7Y=
 go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.72.0 h1:LxwW/9ctSCv+QkE/cLR7M91ZIkXNMqJtEMi1vCw9U8s=
