@@ -21,6 +21,7 @@ import (
 	"github.com/unrolled/secure"
 	"go.icco.me/gutil/logging"
 	"go.icco.me/gutil/render"
+	"go.icco.me/gutil/tracing"
 	"go.icco.me/lunchmoney"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
@@ -59,6 +60,20 @@ func run() int {
 	log := logging.Must(logging.NewLogger(serverName))
 	defer logging.Sync(log)
 
+	ctx := context.Background()
+	shutdown, err := tracing.Init(ctx, serverName)
+	if err != nil {
+		log.Errorw("tracing init", zap.Error(err))
+		return 1
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdown(shutdownCtx); err != nil {
+			log.Warnw("tracing shutdown", zap.Error(err))
+		}
+	}()
+
 	token := getToken()
 	if token == "" {
 		log.Errorw("LUNCHMONEY_TOKEN, LUNCH_MONEY_KEY, or LUNCHMONEY_API_TOKEN is required")
@@ -69,6 +84,9 @@ func run() int {
 	if err != nil {
 		log.Errorw("could not create lunchmoney client", zap.Error(err))
 		return 1
+	}
+	if lm.HTTP != nil {
+		lm.HTTP.Transport = otelhttp.NewTransport(lm.HTTP.Transport)
 	}
 
 	overrides, err := parseOverrides(os.Getenv("ACNTNG_PAYMENT_OVERRIDES"))
@@ -243,7 +261,6 @@ func router(s *Server, metrics http.Handler) http.Handler {
 		SSLRedirect:        false,
 		IsDevelopment:      os.Getenv("NAT_ENV") != "production",
 	}).Handler)
-	r.Use(otelhttp.NewMiddleware(serverName))
 
 	r.Handle("/metrics", metrics)
 
@@ -254,7 +271,11 @@ func router(s *Server, metrics http.Handler) http.Handler {
 		r.Get("/budget", s.handleBudget)
 	})
 
-	return r
+	return otelhttp.NewHandler(r, serverName,
+		otelhttp.WithFilter(func(req *http.Request) bool {
+			return req.URL.Path != "/metrics" && req.URL.Path != "/healthz"
+		}),
+	)
 }
 
 // handleLoans returns the loan report as JSON.
