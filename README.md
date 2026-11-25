@@ -11,6 +11,7 @@ $ export LUNCH_MONEY_KEY=...  # or in .env
 $ task run                    # http://localhost:8080/
 $ task cli                    # the same plan in the terminal
 $ task cli -- -json
+$ task cli -- -ai             # let the model choose the changes; one call per run
 $ task cli -- -debts          # the budget and debt report
 ```
 
@@ -28,7 +29,7 @@ The plan always covers the month after today and takes no params. `/dashboard` a
 
 ## The plan
 
-Every figure comes from rules in `plan.go`, `bills.go` and `changes.go`. It reads the last `ACNTNG_HISTORY_MONTHS` complete months plus the month so far.
+Every figure comes from code in `plan.go`, `bills.go`, `changes.go` and `options.go`; a model, when configured, only chooses which changes matter. It reads the last `ACNTNG_HISTORY_MONTHS` complete months plus the month so far.
 
 - **Usual** is a category's median month over the whole history. **Lately** is its median month from `ACNTNG_SINCE` on, or over the last three months without it. The month in progress counts from the 15th, scaled up to a full month.
 - **Income** is each paycheck source's typical month lately. Paychecks are income deposits whose payee matches `ACNTNG_PAYCHECK_MATCH`; other income is not counted on. A source that has stopped paying drops out.
@@ -36,7 +37,18 @@ Every figure comes from rules in `plan.go`, `bills.go` and `changes.go`. It read
 - **One-offs** are left out of lately and listed: a charge over $500 from a payee that never charges within 25% of it again, and a debt payment over $5,000 and three times the payee's others.
 - **Spending** is every other category at its lately figure. Fees and interest are one line.
 
-Changes are listed biggest saving first, each lowering a category's cap:
+## Choosing the changes
+
+Code lists every lever as an option with its saving worked out: each fee kind, each bill (with `ACNTNG_SINCE`, only those from before it; without it, any but rent, mortgage or medical), each steady monthly charge, each category brought to its usual or its leanest quarter, and the top 20 merchants brought to their usual or halved.
+
+With `GEMINI_API_KEY` set, the model reads the facts (income, bills, twelve months per category, one-offs, the gap to the target) and the options, and picks 3 to 7 by id, most important first, with a reason for each. Code applies them in that order, crediting each only what it actually removes, so two picks on the same money are not counted twice. Titles and figures are the code's; the reasons and the summary are the model's.
+
+- One request through the [LiteLLM](https://docs.litellm.ai/) proxy on `gemini-3.5-flash-lite`, thinking off.
+- Kept by the facts it was asked about, so the page does not call the model again until the numbers change. At most `ACNTNG_AI_MAX_CALLS` calls a UTC day, each recorded before it is made; a failure is retried after an hour.
+- With `DATABASE_URL`, every call and its picks live in the Postgres table `acntng_rankings`, so they survive a restart and the cap holds across processes. Without it they are held in memory.
+- The prompt holds category and merchant figures and payee names. No transactions, accounts or paycheck sources.
+
+Without a key, or when the call fails, the rules below choose instead, biggest saving first, and the page says which chose:
 
 | Kind | When |
 | --- | --- |
@@ -90,6 +102,11 @@ Cadences normalize to monthly (`weekly` × 52/12, `every 2 weeks` × 26/12, `eve
 | `ACNTNG_SAVINGS_TARGET` | no | What next month should leave over, in the base currency. Defaults to `1000`. |
 | `ACNTNG_SINCE` | no | `YYYY-MM` your current way of living began, such as a move. Lately is judged from it, and bills from before it are flagged. |
 | `ACNTNG_HISTORY_MONTHS` | no | Complete months read, 1 to 36. Defaults to `12`. |
+| `GEMINI_API_KEY` | no | This service's LiteLLM virtual key. Lets the model choose the changes. |
+| `GOOGLE_GEMINI_BASE_URL` | with the key | The LiteLLM proxy, e.g. `http://litellm:4000`. The service refuses to start with a key and no proxy, so the key never reaches Google directly. |
+| `GEMINI_MODEL` | no | Model name as LiteLLM routes it. Defaults to `gemini-3.5-flash-lite`. |
+| `ACNTNG_AI_MAX_CALLS` | no | Model calls allowed per day. Defaults to `4`. |
+| `DATABASE_URL` | no | Postgres DSN where rankings are kept. |
 | `ACNTNG_FIXED_CATEGORIES` | no | Comma-separated categories read as bills rather than spending, replacing the default list in `plan.go`. Debt categories always are. |
 | `ACNTNG_PAYMENT_OVERRIDES` | no | JSON mapping a loan ID to its monthly payment, e.g. `{"plaid:1001": 1500}`. |
 | `PORT` | no | Defaults to `8080`. |
@@ -112,3 +129,5 @@ $ open http://localhost:8080/
 ```
 
 `task` runs build, vet and test. Run `task check` to verify formatting, vet, and race testing.
+
+The Postgres store test starts an embedded Postgres, downloading it on first run. `go test -short ./...` skips it, and `TEST_DATABASE_URL` points it at a database of your own.

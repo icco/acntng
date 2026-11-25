@@ -56,6 +56,7 @@ func run() int {
 	cliFlag := flag.Bool("cli", false, "Run in CLI mode and print report directly to stdout")
 	monthFlag := flag.String("month", "", "With -debts, the budget month in YYYY-MM format (defaults to the current month)")
 	jsonFlag := flag.Bool("json", false, "Output report as JSON in CLI mode")
+	aiFlag := flag.Bool("ai", false, "In CLI mode, have the model choose the plan's changes; each run is one call")
 	debtsFlag := flag.Bool("debts", false, "In CLI mode, print the budget and debt report instead of the plan")
 	flag.Parse()
 
@@ -106,11 +107,29 @@ func run() int {
 		return 1
 	}
 
+	var ranker Ranker
+	var rankStore RankStore
+	maxCalls := defaultAICallsPerDay
+	if !*cliFlag || *aiFlag {
+		if ranker, maxCalls, err = rankerFromEnv(ctx); err != nil {
+			log.Errorw("could not set up the model", zap.Error(err))
+			return 1
+		}
+		if ranker == nil {
+			log.Infow("no GEMINI_API_KEY; the rules choose the changes")
+		} else if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+			if rankStore, err = NewPostgresStore(dsn); err != nil {
+				log.Errorw("could not open the ranking store", zap.Error(err))
+				return 1
+			}
+		}
+	}
+
 	if *cliFlag {
 		if *debtsFlag {
 			return runCLI(context.Background(), lm, overrides, *monthFlag, *jsonFlag)
 		}
-		return runPlanCLI(ctx, &Server{Log: log, Client: lm, PlanOptions: planOpts}, *jsonFlag)
+		return runPlanCLI(ctx, &Server{Log: log, Client: lm, PlanOptions: planOpts, Ranker: ranker, rank: rankCache{store: rankStore, maxCalls: maxCalls}}, *jsonFlag)
 	}
 
 	// Siblings on mist's shared network reach this container directly, so fail
@@ -152,6 +171,8 @@ func run() int {
 			Client:      lm,
 			Overrides:   overrides,
 			PlanOptions: planOpts,
+			Ranker:      ranker,
+			rank:        rankCache{store: rankStore, maxCalls: maxCalls},
 			SharedKey:   sharedKey,
 			Now:         time.Now,
 		}, promhttp.HandlerFor(registry, promhttp.HandlerOpts{})),
@@ -200,6 +221,8 @@ type Server struct {
 	Overrides map[string]float64
 	// PlanOptions carries the plan's configuration; Now is set per request.
 	PlanOptions PlanOptions
+	// Ranker, when set, chooses the plan's changes; the rules do otherwise.
+	Ranker Ranker
 	// SharedKey, when set, is required on report requests.
 	SharedKey string
 	// Now is injectable so tests can pin the reporting month.
@@ -208,6 +231,7 @@ type Server struct {
 	loanCache   cache[*Report]
 	budgetCache cache[*BudgetReport]
 	planCache   cache[*Plan]
+	rank        rankCache
 }
 
 // clock returns the injected clock, or the real one.
@@ -576,4 +600,26 @@ func utilStrOrEmpty(p *float64) string {
 		return ""
 	}
 	return fmt.Sprintf("%.0f%%", *p)
+}
+
+// rankerFromEnv builds the model that ranks changes, or nil without a key,
+// and reads how many calls it may make a day.
+func rankerFromEnv(ctx context.Context) (Ranker, int, error) {
+	maxCalls := defaultAICallsPerDay
+	if raw := os.Getenv("ACNTNG_AI_MAX_CALLS"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			return nil, 0, fmt.Errorf("ACNTNG_AI_MAX_CALLS must be a non-negative integer, got %q", raw)
+		}
+		maxCalls = n
+	}
+	model := defaultAIModel
+	if raw := os.Getenv("GEMINI_MODEL"); raw != "" {
+		model = raw
+	}
+	g, err := NewGeminiRanker(ctx, model)
+	if err != nil || g == nil {
+		return nil, maxCalls, err
+	}
+	return g, maxCalls, nil
 }

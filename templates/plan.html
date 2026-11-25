@@ -18,6 +18,7 @@
 
   <section class="verdict">
     <p class="big">{{verdict .}}</p>
+    {{with .Summary}}<p class="sub">{{.}}</p>{{end}}
     <p class="sub">{{basis .}}</p>
     <div class="flow">
       <div><span>Income</span><b class="num">{{dollars $t.Income}}</b></div>
@@ -36,7 +37,7 @@
     <ol class="changes">
       {{range .Changes}}
       <li class="{{.Kind}}">
-        <div><strong>{{.Title}}</strong><p>{{.Detail}}</p></div>
+        <div><strong>{{.Title}}</strong>{{with .Why}}<p>{{.}}</p>{{end}}<p{{if .Why}} class="facts"{{end}}>{{.Detail}}</p></div>
         <b class="num">+{{dollars .Saving}}</b>
       </li>
       {{end}}
@@ -94,6 +95,7 @@
   {{end}}
 
   <footer>
+    Changes chosen by {{if eq .ChosenBy "rules"}}the rules{{else}}{{.ChosenBy}} from {{len .Options}} options, with every figure worked out in code{{end}}.
     Read live from Lunch Money, {{monthName (first .Months)}} to now, at {{stamp .GeneratedAt}}.
     <a href="plan">JSON</a> · <a href="dashboard">budgets and debts</a>
   </footer>

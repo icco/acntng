@@ -72,6 +72,8 @@ type Change struct {
 	Detail   string  `json:"detail"`
 	Category string  `json:"category,omitempty"`
 	Saving   float64 `json:"saving"`
+	// Why is the model's reason for picking it, empty when rules chose.
+	Why string `json:"why,omitempty"`
 }
 
 // caps builds a line per category of chosen spending: its usual month over
@@ -101,6 +103,7 @@ func caps(charges []charge, months, lately []string, scale map[string]float64) [
 		hist := monthly(m, months, nil)
 		line := CapLine{
 			Category: cat,
+			History:  hist,
 			Usual:    round2(max(median(hist), 0)),
 			Low:      round2(max(quantile(hist, 0.25), 0)),
 			Lately:   round2(max(median(monthly(recent[cat], lately, scale)), 0)),
