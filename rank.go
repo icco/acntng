@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultAIModel = "gemini-3.5-flash-lite"
-	// defaultAICallsPerDay bounds spend however often the page is loaded.
+	// defaultAICallsPerDay bounds spend however often the facts change.
 	defaultAICallsPerDay = 4
 	maxPicks             = 7
 	maxWhy               = 400
@@ -192,56 +192,73 @@ func rankSchema() *genai.Schema {
 	}
 }
 
-type rankEntry struct {
-	ranking *Ranking
-	err     error
-	at      time.Time
-}
-
-// rankCache remembers rankings by day and facts, so the model is asked at
-// most once a day while the numbers stay the same, and at most maxCalls
-// times a day in all.
+// rankCache asks the model at most once per set of facts and at most
+// maxCalls times a UTC day, with every call and its outcome kept in store.
 type rankCache struct {
 	mu       sync.Mutex
-	entries  map[string]rankEntry
-	calls    map[string]int
+	store    RankStore
 	maxCalls int
 }
 
 // ErrRankBudget means today's model calls are used up.
 var ErrRankBudget = errors.New("today's model calls are used up")
 
+// finishTimeout bounds the write that records how a call ended.
+const finishTimeout = 10 * time.Second
+
 func (c *rankCache) get(ctx context.Context, r Ranker, prompt string, now time.Time) (*Ranking, error) {
-	day := now.UTC().Format(dayKey)
 	sum := sha256.Sum256([]byte(prompt))
-	key := day + hex.EncodeToString(sum[:])
+	key := hex.EncodeToString(sum[:])
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.entries == nil {
-		c.entries, c.calls = map[string]rankEntry{}, map[string]int{}
+	if c.store == nil {
+		c.store = &MemoryStore{}
 	}
-	if e, ok := c.entries[key]; ok && (e.err == nil || now.Sub(e.at) < rankRetryAfter) {
-		return e.ranking, e.err
+
+	got, failure, at, err := c.store.Lookup(ctx, key)
+	if err != nil {
+		return nil, fmt.Errorf("read stored ranking: %w", err)
 	}
-	if c.calls[day] >= c.maxCalls {
+	if got != nil {
+		return got, nil
+	}
+	if failure != "" && now.Sub(at) < rankRetryAfter {
+		return nil, errors.New(failure)
+	}
+
+	day := now.UTC().Truncate(24 * time.Hour)
+	id, ok, err := c.store.Reserve(ctx, key, day, c.maxCalls, now)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
 		return nil, ErrRankBudget
 	}
-	c.calls[day]++
 
 	// The call is counted already, so it runs to the end even when the
 	// request that asked for it goes away.
-	callCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rankTimeout)
+	bg := context.WithoutCancel(ctx)
+	callCtx, cancel := context.WithTimeout(bg, rankTimeout)
 	defer cancel()
-	ranking, err := r.Rank(callCtx, prompt)
-	if err == nil && (ranking == nil || len(ranking.Picks) == 0) {
-		err = errors.New("the model picked nothing")
+	ranking, rankErr := r.Rank(callCtx, prompt)
+	if rankErr == nil && (ranking == nil || len(ranking.Picks) == 0) {
+		rankErr = errors.New("the model picked nothing")
 	}
-	if err != nil {
-		ranking = nil
+	failure = ""
+	if rankErr != nil {
+		failure = rankErr.Error()
 	}
-	c.entries[key] = rankEntry{ranking: ranking, err: err, at: now}
-	return ranking, err
+
+	finishCtx, cancelFinish := context.WithTimeout(bg, finishTimeout)
+	defer cancelFinish()
+	if err := c.store.Finish(finishCtx, id, ranking, failure); err != nil {
+		return nil, errors.Join(rankErr, fmt.Errorf("record ranking: %w", err))
+	}
+	if rankErr != nil {
+		return nil, rankErr
+	}
+	return ranking, nil
 }
 
 // clean trims what the model wrote: unknown and repeated ids go, and each

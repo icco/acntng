@@ -44,7 +44,8 @@ Code lists every lever as an option with its saving worked out: each fee kind, e
 With `GEMINI_API_KEY` set, the model reads the facts (income, bills, twelve months per category, one-offs, the gap to the target) and the options, and picks 3 to 7 by id, most important first, with a reason for each. Code applies them in that order, crediting each only what it actually removes, so two picks on the same money are not counted twice. Titles and figures are the code's; the reasons and the summary are the model's.
 
 - One request through the [LiteLLM](https://docs.litellm.ai/) proxy on `gemini-3.5-flash-lite`, thinking off.
-- Cached by day and by the facts, so viewing the page does not call the model again until the numbers change. At most `ACNTNG_AI_MAX_CALLS` calls a day; a failure is retried after an hour.
+- Kept by the facts it was asked about, so the page does not call the model again until the numbers change. At most `ACNTNG_AI_MAX_CALLS` calls a UTC day, each recorded before it is made; a failure is retried after an hour.
+- With `DATABASE_URL`, every call and its picks live in the Postgres table `acntng_rankings`, so they survive a restart and the cap holds across processes. Without it they are held in memory.
 - The prompt holds category and merchant figures and payee names. No transactions, accounts or paycheck sources.
 
 Without a key, or when the call fails, the rules below choose instead, biggest saving first, and the page says which chose:
@@ -105,6 +106,7 @@ Cadences normalize to monthly (`weekly` × 52/12, `every 2 weeks` × 26/12, `eve
 | `GOOGLE_GEMINI_BASE_URL` | with the key | The LiteLLM proxy, e.g. `http://litellm:4000`. The service refuses to start with a key and no proxy, so the key never reaches Google directly. |
 | `GEMINI_MODEL` | no | Model name as LiteLLM routes it. Defaults to `gemini-3.5-flash-lite`. |
 | `ACNTNG_AI_MAX_CALLS` | no | Model calls allowed per day. Defaults to `4`. |
+| `DATABASE_URL` | no | Postgres DSN where rankings are kept. |
 | `ACNTNG_FIXED_CATEGORIES` | no | Comma-separated categories read as bills rather than spending, replacing the default list in `plan.go`. Debt categories always are. |
 | `ACNTNG_PAYMENT_OVERRIDES` | no | JSON mapping a loan ID to its monthly payment, e.g. `{"plaid:1001": 1500}`. |
 | `PORT` | no | Defaults to `8080`. |
@@ -127,3 +129,5 @@ $ open http://localhost:8080/
 ```
 
 `task` runs build, vet and test. Run `task check` to verify formatting, vet, and race testing.
+
+The Postgres store test starts an embedded Postgres, downloading it on first run. `go test -short ./...` skips it, and `TEST_DATABASE_URL` points it at a database of your own.

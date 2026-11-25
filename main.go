@@ -108,6 +108,7 @@ func run() int {
 	}
 
 	var ranker Ranker
+	var rankStore RankStore
 	maxCalls := defaultAICallsPerDay
 	if !*cliFlag || *aiFlag {
 		if ranker, maxCalls, err = rankerFromEnv(ctx); err != nil {
@@ -116,6 +117,11 @@ func run() int {
 		}
 		if ranker == nil {
 			log.Infow("no GEMINI_API_KEY; the rules choose the changes")
+		} else if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
+			if rankStore, err = NewPostgresStore(dsn); err != nil {
+				log.Errorw("could not open the ranking store", zap.Error(err))
+				return 1
+			}
 		}
 	}
 
@@ -123,7 +129,7 @@ func run() int {
 		if *debtsFlag {
 			return runCLI(context.Background(), lm, overrides, *monthFlag, *jsonFlag)
 		}
-		return runPlanCLI(ctx, &Server{Log: log, Client: lm, PlanOptions: planOpts, Ranker: ranker, rank: rankCache{maxCalls: maxCalls}}, *jsonFlag)
+		return runPlanCLI(ctx, &Server{Log: log, Client: lm, PlanOptions: planOpts, Ranker: ranker, rank: rankCache{store: rankStore, maxCalls: maxCalls}}, *jsonFlag)
 	}
 
 	// Siblings on mist's shared network reach this container directly, so fail
@@ -166,7 +172,7 @@ func run() int {
 			Overrides:   overrides,
 			PlanOptions: planOpts,
 			Ranker:      ranker,
-			rank:        rankCache{maxCalls: maxCalls},
+			rank:        rankCache{store: rankStore, maxCalls: maxCalls},
 			SharedKey:   sharedKey,
 			Now:         time.Now,
 		}, promhttp.HandlerFor(registry, promhttp.HandlerOpts{})),

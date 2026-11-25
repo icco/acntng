@@ -25,6 +25,7 @@ Run via `task <name>`:
 - `changes.go` — Spending caps and the rule-chosen changes, the fallback when no model ranks.
 - `options.go` — Every lever with its saving, and applying the picked ones.
 - `rank.go` — The model call through LiteLLM that picks options, and its daily cache.
+- `store.go` — Every model call and its picks: Postgres via GORM, or memory.
 - `planview.go` — The plan's handlers, verdict and terminal output.
 - `budget.go`, `loans.go` — The budget and debt reports behind `/dashboard`.
 - `templates/` — HTML templates; `style.html` is shared.
