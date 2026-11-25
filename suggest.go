@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -21,6 +22,9 @@ const (
 	// transactions worth a suggestion of its own.
 	uncategorizedShare = 0.05
 )
+
+// feeCategory matches whole words, so Coffee is not a fee.
+var feeCategory = regexp.MustCompile(`(?i)\bfees?\b`)
 
 // Suggestion kinds.
 const (
@@ -50,6 +54,19 @@ type Suggestion struct {
 func suggest(p *Plan) {
 	var perCategory, trims []Suggestion
 
+	// Without history there is no normal: comparing against zero would call
+	// every bill overspending. The month itself is the only honest target.
+	if len(p.BaselineMonths) == 0 {
+		for i := range p.Categories {
+			p.Categories[i].Target = p.Categories[i].Review
+		}
+		p.Suggestions = append(p.Suggestions, habits(p.Merchants)...)
+		if s, ok := uncategorized(p.Categories); ok {
+			p.Suggestions = append(p.Suggestions, s)
+		}
+		return
+	}
+
 	for i := range p.Categories {
 		line := &p.Categories[i]
 		if line.Fixed || line.Name == uncategorizedName {
@@ -57,7 +74,7 @@ func suggest(p *Plan) {
 		}
 
 		switch {
-		case strings.Contains(strings.ToLower(line.Name), "fee"):
+		case feeCategory.MatchString(line.Name):
 			if line.Review <= 0 {
 				continue
 			}
@@ -130,11 +147,14 @@ func headline(p *Plan) {
 		return
 	}
 	gap := -t.MarginNormal
+	// Only targets below normal close this gap; returning an overspent
+	// category to normal just gets back to it.
+	recovered := min(gap, max(t.SpendNormal-t.TargetSpend, 0))
 	s := Suggestion{
 		Kind:  KindShortfall,
 		Title: fmt.Sprintf("A normal month spends %s more than the paychecks bring in", dollars(gap)),
-		Detail: fmt.Sprintf("Paychecks are normally %s and spending %s. The changes below recover %s of the gap.",
-			dollars(t.PaycheckNormal), dollars(t.SpendNormal), dollars(min(gap, t.PotentialSavings))),
+		Detail: fmt.Sprintf("Paychecks are normally %s and spending %s. The targets below close %s of that gap.",
+			dollars(t.PaycheckNormal), dollars(t.SpendNormal), dollars(recovered)),
 	}
 	p.Suggestions = append([]Suggestion{s}, p.Suggestions...)
 }

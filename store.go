@@ -68,42 +68,64 @@ func (s *PostgresStore) Latest(ctx context.Context, month string) (*Advice, erro
 	return advice, nil
 }
 
-// Record saves one attempt.
-func (s *PostgresStore) Record(ctx context.Context, month string, a *Advice, failure string, at time.Time) error {
+// pendingFailure marks an attempt that has been reserved but not settled.
+const pendingFailure = "pending"
+
+// reserveLockKey serializes Reserve across every process sharing the table.
+const reserveLockKey = 0x61636e74
+
+// Reserve inserts a pending attempt unless the budget is spent. An advisory
+// lock makes the count and the insert one step across processes.
+func (s *PostgresStore) Reserve(ctx context.Context, month string, since time.Time, limit int, at time.Time) (uint, bool, error) {
+	row := adviceRow{Month: month, CreatedAt: at.UTC(), Failure: pendingFailure}
+	ok := false
+	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", reserveLockKey).Error; err != nil {
+			return fmt.Errorf("lock: %w", err)
+		}
+		var n int64
+		if err := tx.Model(&adviceRow{}).Where("created_at >= ?", since.UTC()).Count(&n).Error; err != nil {
+			return fmt.Errorf("count: %w", err)
+		}
+		if int(n) >= limit {
+			return nil
+		}
+		ok = true
+		return tx.Create(&row).Error
+	})
+	if err != nil {
+		return 0, false, fmt.Errorf("reserve advice: %w", err)
+	}
+	return row.ID, ok, nil
+}
+
+// Finish settles a reserved attempt.
+func (s *PostgresStore) Finish(ctx context.Context, id uint, a *Advice, failure string) error {
 	body, err := json.Marshal(a)
 	if err != nil {
 		return fmt.Errorf("encode advice: %w", err)
 	}
-	row := adviceRow{
-		Month:     month,
-		CreatedAt: at.UTC(),
-		Model:     a.Model,
-		TokensIn:  a.TokensIn,
-		TokensOut: a.TokensOut,
-		Failure:   failure,
-		Body:      string(body),
+	res := s.db.WithContext(ctx).Model(&adviceRow{}).Where("id = ?", id).Updates(map[string]any{
+		"model":      a.Model,
+		"tokens_in":  a.TokensIn,
+		"tokens_out": a.TokensOut,
+		"failure":    failure,
+		"body":       string(body),
+	})
+	if res.Error != nil {
+		return fmt.Errorf("update advice %d: %w", id, res.Error)
 	}
-	if err := s.db.WithContext(ctx).Create(&row).Error; err != nil {
-		return fmt.Errorf("insert advice: %w", err)
+	if res.RowsAffected != 1 {
+		return fmt.Errorf("update advice %d: no such attempt", id)
 	}
 	return nil
 }
 
-// CountSince counts attempts at or after since.
-func (s *PostgresStore) CountSince(ctx context.Context, since time.Time) (int, error) {
-	var n int64
-	if err := s.db.WithContext(ctx).Model(&adviceRow{}).
-		Where("created_at >= ?", since.UTC()).Count(&n).Error; err != nil {
-		return 0, fmt.Errorf("count advice: %w", err)
-	}
-	return int(n), nil
-}
-
 type memoryAttempt struct {
-	month  string
-	advice *Advice
-	failed bool
-	at     time.Time
+	month   string
+	advice  *Advice
+	settled bool
+	at      time.Time
 }
 
 // MemoryStore keeps advice for the life of the process. It is the fallback
@@ -118,25 +140,21 @@ func (s *MemoryStore) Latest(_ context.Context, month string) (*Advice, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	for i := len(s.attempts) - 1; i >= 0; i-- {
-		if a := s.attempts[i]; a.month == month && !a.failed {
-			return a.advice, nil
+	var best *memoryAttempt
+	for i := range s.attempts {
+		a := &s.attempts[i]
+		if a.month == month && a.settled && a.advice != nil && (best == nil || !a.at.Before(best.at)) {
+			best = a
 		}
 	}
-	return nil, nil
+	if best == nil {
+		return nil, nil
+	}
+	return best.advice, nil
 }
 
-// Record saves one attempt.
-func (s *MemoryStore) Record(_ context.Context, month string, a *Advice, failure string, at time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.attempts = append(s.attempts, memoryAttempt{month: month, advice: a, failed: failure != "", at: at})
-	return nil
-}
-
-// CountSince counts attempts at or after since.
-func (s *MemoryStore) CountSince(_ context.Context, since time.Time) (int, error) {
+// Reserve appends a pending attempt unless the budget is spent.
+func (s *MemoryStore) Reserve(_ context.Context, month string, since time.Time, limit int, at time.Time) (uint, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -146,5 +164,25 @@ func (s *MemoryStore) CountSince(_ context.Context, since time.Time) (int, error
 			n++
 		}
 	}
-	return n, nil
+	if n >= limit {
+		return 0, false, nil
+	}
+	s.attempts = append(s.attempts, memoryAttempt{month: month, at: at})
+	return uint(len(s.attempts)), true, nil
+}
+
+// Finish settles a reserved attempt.
+func (s *MemoryStore) Finish(_ context.Context, id uint, a *Advice, failure string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if id == 0 || int(id) > len(s.attempts) { //nolint:gosec // bounded by the slice length
+		return fmt.Errorf("no such attempt %d", id)
+	}
+	attempt := &s.attempts[id-1]
+	attempt.settled = true
+	if failure == "" {
+		attempt.advice = a
+	}
+	return nil
 }

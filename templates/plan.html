@@ -56,7 +56,7 @@
       {{range .Suggestions}}
       <li>
         <div><strong>{{.Title}}</strong><p>{{.Action}} {{.Why}}</p></div>
-        <b>{{money .MonthlySavings}}/mo</b>
+        {{with .MonthlySavings}}<b>{{money .}}/mo</b>{{end}}
       </li>
       {{end}}
     </ul>
@@ -65,9 +65,9 @@
       <button type="submit">Regenerate</button>
     </form>
   </section>
-  {{else}}{{if and .AIEnabled .Suggestions (not .AdviceErr)}}
+  {{else}}{{if and .AIEnabled .Suggestions .BaselineMonths}}
   <form class="meta" method="post" action="advice?month={{.Month}}">
-    <span>No AI advice for this month yet.</span>
+    <span>No AI advice for this month yet. Generating it is one model call.</span>
     <button type="submit">Generate</button>
   </form>
   {{end}}{{end}}

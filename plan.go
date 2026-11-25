@@ -20,6 +20,8 @@ const (
 	// maxMerchants caps the merchant table, which is context for a human and
 	// prompt tokens for the model.
 	maxMerchants = 12
+	// minRecurringMonths is how many months in a row make a charge recurring.
+	minRecurringMonths = 3
 )
 
 // defaultPaycheckPattern matches the payroll processors and bank descriptors a
@@ -82,7 +84,8 @@ type MerchantLine struct {
 }
 
 // RecurringCharge is a flexible charge that lands once a month at a steady
-// amount, found from the transactions themselves.
+// amount, found from the transactions themselves. Months counts the unbroken
+// run ending in the review month.
 type RecurringCharge struct {
 	Name     string  `json:"name"`
 	Category string  `json:"category"`
@@ -413,7 +416,9 @@ func (l *ledger) add(tx *lunchmoney.Transaction, byID map[int64]*lunchmoney.Cate
 	if isFixed(name) || tx.ToBase <= 0 || strings.TrimSpace(tx.Payee) == "" {
 		return
 	}
-	key := strings.ToLower(strings.TrimSpace(tx.Payee))
+	// Keyed by category as well, so a total never mixes two categories under
+	// the name of whichever came first.
+	key := fmt.Sprintf("%d\x00%s", id, strings.ToLower(strings.TrimSpace(tx.Payee)))
 	m := l.merchants[key]
 	if m == nil {
 		m = &merchantAgg{name: strings.TrimSpace(tx.Payee), category: name, months: map[string]*merchantMonth{}}
@@ -562,21 +567,18 @@ func (l *ledger) recurringCharges(baseline []string, reviewKey string) []Recurri
 		if latest == nil || latest.count != 1 {
 			continue
 		}
+		// Walk back from the review month and stop at the first gap: a
+		// quarterly charge must not be priced as a monthly one.
 		seen, lo, hi := 0, latest.total, latest.total
-		steady := true
-		for _, key := range window {
-			mm := m.months[key]
-			if mm == nil {
-				continue
-			}
-			if mm.count != 1 {
-				steady = false
+		for i := len(window) - 1; i >= 0; i-- {
+			mm := m.months[window[i]]
+			if mm == nil || mm.count != 1 {
 				break
 			}
 			seen++
 			lo, hi = min(lo, mm.total), max(hi, mm.total)
 		}
-		if !steady || seen < 3 || hi > lo*1.25 {
+		if seen < minRecurringMonths || hi > lo*1.25 {
 			continue
 		}
 		out = append(out, RecurringCharge{Name: m.name, Category: m.category, Monthly: round2(latest.total), Months: seen})

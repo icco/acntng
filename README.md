@@ -19,7 +19,7 @@ $ task cli -- -debts          # the budget and debt report
 | --- | --- |
 | `GET /` | The plan. HTML. |
 | `GET /plan` | The plan. JSON. |
-| `POST /advice` | Spend one model call on fresh advice, then redirect to `/`. |
+| `POST /advice` | Spend one model call on advice for the month, then redirect to `/`. The only route that calls the model. |
 | `GET /dashboard` | Budget vs actual, and every debt. HTML. |
 | `GET /budget` | The month's budget. JSON. |
 | `GET /loans` | Loan balances and payments. JSON. |
@@ -45,20 +45,20 @@ Suggestions come from rules, each with a saving measured against the review mont
 | `shortfall` | A normal month spends more than the paychecks. Listed first. |
 | `over_normal` | A flexible category ran 10% and $25 over its normal. Target: normal. |
 | `trim` | The three flexible categories with the most room above their 25th percentile month. Target: that month. |
-| `fees` | Anything in a category named for fees. Target: zero. |
+| `fees` | Anything in a category with the word fee or fees in its name. Target: zero. |
 | `habit` | Four or more purchases at one merchant totalling $60. Not added to the total, since it sits inside a category. |
-| `subscriptions` | Charges landing once a month at a steady amount for three months. No saving is claimed. |
+| `subscriptions` | Charges landing once a month at a steady amount for three months running. No saving is claimed. |
 | `uncategorized` | Over 5% of the month has no category. |
 
-`totals.potential_savings` sums the category suggestions; `totals.target_spend` sums the per-category targets.
+`totals.potential_savings` sums the category suggestions; `totals.target_spend` sums the per-category targets. With no month of history before the review month there is no normal, so each target is the month's own spending and only `habit` and `uncategorized` apply.
 
 ## AI advice
 
-Optional. With a Gemini key the plan's aggregates go to the model once, and it returns a short summary and up to five suggestions, shown above the rule-based ones. Spend is kept low by construction:
+Optional. With a Gemini key, the Generate button sends the plan's aggregates to the model, which picks up to five of the rule-based suggestions and writes a specific action for each. Titles and savings stay the rules' own, so no dollar figure on the page is a model's guess. Spend is kept low by construction:
 
-- One request per review month, with thinking off, on `gemini-3.5-flash-lite`. No agent loop and no tool calls. A real month measured 3,274 tokens in and 1,077 out.
-- The answer is stored and reused. Only `POST /advice` (the Regenerate button) asks again.
-- At most `ACNTNG_AI_MAX_CALLS` requests per calendar month, failed ones included, so a broken model is not retried on every page view.
+- Viewing never calls the model. `GET /` and `GET /plan` read stored advice; only `POST /advice` (the Generate and Regenerate buttons) and `-cli -ai` generate.
+- One request each time, with thinking off, on `gemini-3.5-flash-lite`. No agent loop and no tool calls. A real month measured 3,320 tokens in and 670 out.
+- At most `ACNTNG_AI_MAX_CALLS` requests per calendar month. Each is recorded before the model is called, so failures and dropped connections still count.
 - The prompt holds category totals, merchant names and the rule-based suggestions. No transactions, account names, or paycheck sources.
 
 With `DATABASE_URL` the advice and the call count live in the Postgres table `acntng_advice` and survive a restart. Without it they are held in memory, and a restart resets the budget.

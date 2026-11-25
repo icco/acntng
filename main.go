@@ -57,7 +57,7 @@ func run() int {
 	monthFlag := flag.String("month", "", "Reporting month in YYYY-MM format (defaults to current month)")
 	jsonFlag := flag.Bool("json", false, "Output report as JSON in CLI mode")
 	debtsFlag := flag.Bool("debts", false, "In CLI mode, print the budget and debt report instead of the plan")
-	aiFlag := flag.Bool("ai", false, "In CLI mode, also ask the model for advice")
+	aiFlag := flag.Bool("ai", false, "In CLI mode, include AI advice, generating it if none is stored")
 	flag.Parse()
 
 	log := logging.Must(logging.NewLogger(serverName))
@@ -107,21 +107,23 @@ func run() int {
 		return 1
 	}
 
-	coach, err := coachFromEnv(ctx)
-	if err != nil {
-		log.Errorw("could not set up advice", zap.Error(err))
-		return 1
-	}
-	if coach == nil {
-		log.Infow("no GEMINI_API_KEY or GOOGLE_CLOUD_PROJECT; suggestions are rule-based only")
+	// The rule-based CLI reports must work with the model or its database
+	// down, so advice is only set up for the modes that use it.
+	var coach *Coach
+	if !*cliFlag || (*aiFlag && !*debtsFlag) {
+		coach, err = coachFromEnv(ctx)
+		if err != nil {
+			log.Errorw("could not set up advice", zap.Error(err))
+			return 1
+		}
+		if coach == nil {
+			log.Infow("no GEMINI_API_KEY or GOOGLE_CLOUD_PROJECT; suggestions are rule-based only")
+		}
 	}
 
 	if *cliFlag {
 		if *debtsFlag {
 			return runCLI(context.Background(), lm, overrides, *monthFlag, *jsonFlag)
-		}
-		if !*aiFlag {
-			coach = nil
 		}
 		return runPlanCLI(ctx, &Server{Log: log, Client: lm, PlanOptions: planOpts, Coach: coach}, *monthFlag, *jsonFlag)
 	}
@@ -450,6 +452,9 @@ func runPlanCLI(ctx context.Context, s *Server, monthStr string, asJSON bool) in
 	}
 
 	p, err, adviceErr := s.advisedPlan(ctx, review, now, false)
+	if err == nil && adviceErr == nil && p.Advice == nil && s.Coach != nil {
+		p, err, adviceErr = s.advisedPlan(ctx, review, now, true)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building plan: %v\n", err)
 		return 1

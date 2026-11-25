@@ -32,5 +32,6 @@ Run via `task <name>`:
 - Follow icco Go conventions: `go.icco.me/gutil` for logging and helpers.
 - PR titles and commits must follow Conventional Commits with lowercase subjects.
 - Ensure `task lint` and `task test` pass before committing.
-- Keep model spend low: one request per review month, thinking off, and every attempt recorded against `ACNTNG_AI_MAX_CALLS`. Do not add calls on the page-view path.
+- Keep model spend low: one request per explicit `POST /advice`, thinking off, reserved against `ACNTNG_AI_MAX_CALLS` before the call. GET routes never call the model.
+- The model picks and words rule-based suggestions by ID. Titles and dollar figures always come from `suggest.go`.
 - Test fixtures use invented payees and amounts, never real Lunch Money data.

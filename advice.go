@@ -23,21 +23,23 @@ const (
 )
 
 const adviceSystem = `You are a frugal personal finance coach reviewing one household's month.
-You get JSON: paycheck income, spending per category against that category's normal (median) month, top merchants, recurring charges, and rule-based candidate suggestions.
+You get JSON: paycheck income, spending per category against that category's normal (median) month, top merchants, recurring charges, and numbered candidate suggestions.
 Write a plan for next month that saves money.
+- Pick the few candidates that matter most, by their id. Each id at most once.
+- For each, write one concrete action for next month and one sentence on why, naming the merchants or amounts in the data that make it specific.
 - Use only the figures given. Never invent merchants, amounts, or categories.
 - Leave categories marked fixed alone.
-- Each suggestion is one concrete action for next month, with a monthly saving in dollars that the figures support.
-- Prefer the few changes that save the most. Do not repeat a suggestion.
-- Keep summary to two sentences, and each action and reason to one sentence.`
+- Keep summary to two sentences.`
 
-// AISuggestion is one model-written suggestion.
+// AISuggestion is a rule-based suggestion the model chose and put into words.
+// Title, Category and MonthlySavings are copied from the rule, never written
+// by the model, so no dollar figure on the page is a model's guess.
 type AISuggestion struct {
-	Title          string  `json:"title"`
-	Action         string  `json:"action"`
-	Category       string  `json:"category,omitempty"`
-	MonthlySavings float64 `json:"monthly_savings"`
-	Why            string  `json:"why"`
+	Title          string   `json:"title"`
+	Action         string   `json:"action"`
+	Category       string   `json:"category,omitempty"`
+	MonthlySavings *float64 `json:"monthly_savings"`
+	Why            string   `json:"why"`
 }
 
 // Advice is the model's read of a plan, plus what it cost to produce.
@@ -61,12 +63,18 @@ type Adviser interface {
 type AdviceStore interface {
 	// Latest returns the newest successful advice for a review month, or nil.
 	Latest(ctx context.Context, month string) (*Advice, error)
-	// Record saves an attempt. A failed attempt is saved with its error so it
-	// still counts against the cap.
-	Record(ctx context.Context, month string, a *Advice, failure string, at time.Time) error
-	// CountSince counts attempts, failed ones included.
-	CountSince(ctx context.Context, since time.Time) (int, error)
+	// Reserve records an attempt before the model is called, so the call is
+	// counted whatever happens next. It reports false, recording nothing,
+	// when limit attempts already exist at or after since. Check and insert
+	// are atomic.
+	Reserve(ctx context.Context, month string, since time.Time, limit int, at time.Time) (id uint, ok bool, err error)
+	// Finish fills in a reserved attempt. A non-empty failure keeps it out of
+	// Latest.
+	Finish(ctx context.Context, id uint, a *Advice, failure string) error
 }
+
+// finishTimeout bounds the write that records how a model call ended.
+const finishTimeout = 10 * time.Second
 
 // Coach hands out advice within a monthly call budget.
 type Coach struct {
@@ -81,53 +89,62 @@ type Coach struct {
 // ErrAdviceBudget means the month's model calls are used up.
 var ErrAdviceBudget = errors.New("monthly AI call budget is used up")
 
-// For returns stored advice for the plan's month, generating it at most once.
-// With refresh set it generates again, still inside the budget. A nil result
-// with a nil error means there is no advice and none was attempted.
-func (c *Coach) For(ctx context.Context, p *Plan, refresh bool, now time.Time) (*Advice, error) {
-	if c == nil || c.Adviser == nil || c.Store == nil {
+// ErrNothingToAdvise means the plan gives a model nothing to work with.
+var ErrNothingToAdvise = errors.New("no baseline or suggestions to advise on")
+
+// Stored returns the saved advice for a review month, or nil. It never calls
+// the model, so it is safe on every page view.
+func (c *Coach) Stored(ctx context.Context, month string) (*Advice, error) {
+	if c == nil {
 		return nil, nil
 	}
-
-	// One generation at a time, so concurrent first views cannot each pay.
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	stored, err := c.Store.Latest(ctx, p.Month)
+	a, err := c.Store.Latest(ctx, month)
 	if err != nil {
 		return nil, fmt.Errorf("read stored advice: %w", err)
 	}
-	if stored != nil && !refresh {
-		return stored, nil
+	return a, nil
+}
+
+// Generate spends one model call on advice for the plan. The attempt is
+// recorded before the call and settled after it on a context of its own, so
+// neither a failure nor a dropped connection leaves a call uncounted.
+func (c *Coach) Generate(ctx context.Context, p *Plan, now time.Time) (*Advice, error) {
+	if c == nil {
+		return nil, nil
 	}
-	// Without a baseline or suggestions there is nothing for a model to add.
 	if len(p.BaselineMonths) == 0 || len(p.Suggestions) == 0 {
-		return stored, nil
+		return nil, ErrNothingToAdvise
 	}
 
-	used, err := c.Store.CountSince(ctx, monthStart(now))
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	id, ok, err := c.Store.Reserve(ctx, p.Month, monthStart(now), c.MaxCalls, now)
 	if err != nil {
-		return stored, fmt.Errorf("count advice calls: %w", err)
+		return nil, fmt.Errorf("reserve advice call: %w", err)
 	}
-	if used >= c.MaxCalls {
-		return stored, ErrAdviceBudget
-	}
-
-	advice, err := c.Adviser.Advise(ctx, p)
-	if err != nil {
-		if advice == nil {
-			advice = &Advice{}
-		}
-		if recErr := c.Store.Record(ctx, p.Month, advice, err.Error(), now); recErr != nil {
-			return stored, errors.Join(err, fmt.Errorf("record failed advice call: %w", recErr))
-		}
-		return stored, err
+	if !ok {
+		return nil, ErrAdviceBudget
 	}
 
+	advice, adviseErr := c.Adviser.Advise(ctx, p)
+	if advice == nil {
+		advice = &Advice{}
+	}
 	advice.Month = p.Month
 	advice.GeneratedAt = now.UTC()
-	if err := c.Store.Record(ctx, p.Month, advice, "", now); err != nil {
-		return advice, fmt.Errorf("store advice: %w", err)
+
+	failure := ""
+	if adviseErr != nil {
+		failure = adviseErr.Error()
+	}
+	finishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+	defer cancel()
+	if err := c.Store.Finish(finishCtx, id, advice, failure); err != nil {
+		return nil, errors.Join(adviseErr, fmt.Errorf("record advice call: %w", err))
+	}
+	if adviseErr != nil {
+		return nil, adviseErr
 	}
 	return advice, nil
 }
@@ -142,31 +159,39 @@ type promptCategory struct {
 	Spent  float64 `json:"spent"`
 }
 
+// promptCandidate is a rule-based suggestion the model may pick by ID.
+type promptCandidate struct {
+	ID int `json:"id"`
+	Suggestion
+}
+
 type promptInput struct {
-	Month       string            `json:"month"`
-	PlanFor     string            `json:"plan_for"`
-	Totals      PlanTotals        `json:"totals"`
-	Categories  []promptCategory  `json:"categories"`
-	Merchants   []MerchantLine    `json:"top_merchants"`
-	Recurring   []RecurringCharge `json:"recurring_charges"`
-	Suggestions []Suggestion      `json:"candidates"`
+	Month      string            `json:"month"`
+	PlanFor    string            `json:"plan_for"`
+	Totals     PlanTotals        `json:"totals"`
+	Categories []promptCategory  `json:"categories"`
+	Merchants  []MerchantLine    `json:"top_merchants"`
+	Recurring  []RecurringCharge `json:"recurring_charges"`
+	Candidates []promptCandidate `json:"candidates"`
 }
 
 // advicePrompt is the whole of what leaves for the model: aggregates and
 // merchant names. No transactions, account names, or paycheck sources.
 func advicePrompt(p *Plan) (string, error) {
 	in := promptInput{
-		Month:       p.Month,
-		PlanFor:     p.PlanFor,
-		Totals:      p.Totals,
-		Merchants:   p.Merchants,
-		Recurring:   p.Recurring,
-		Suggestions: p.Suggestions,
+		Month:     p.Month,
+		PlanFor:   p.PlanFor,
+		Totals:    p.Totals,
+		Merchants: p.Merchants,
+		Recurring: p.Recurring,
 	}
 	for _, c := range p.Categories {
 		in.Categories = append(in.Categories, promptCategory{
 			Name: c.Name, Fixed: c.Fixed, Normal: c.Normal, Low: c.Low, Spent: c.Review,
 		})
+	}
+	for i, s := range p.Suggestions {
+		in.Candidates = append(in.Candidates, promptCandidate{ID: i, Suggestion: s})
 	}
 	b, err := json.Marshal(in)
 	if err != nil {
@@ -186,17 +211,48 @@ func adviceSchema() *genai.Schema {
 				Items: &genai.Schema{
 					Type: genai.TypeObject,
 					Properties: map[string]*genai.Schema{
-						"title":           {Type: genai.TypeString},
-						"action":          {Type: genai.TypeString},
-						"category":        {Type: genai.TypeString},
-						"monthly_savings": {Type: genai.TypeNumber},
-						"why":             {Type: genai.TypeString},
+						"id":     {Type: genai.TypeInteger},
+						"action": {Type: genai.TypeString},
+						"why":    {Type: genai.TypeString},
 					},
-					Required: []string{"title", "action", "monthly_savings", "why"},
+					Required: []string{"id", "action", "why"},
 				},
 			},
 		},
 		Required: []string{"summary", "suggestions"},
+	}
+}
+
+// modelAnswer is what the model is allowed to say: which candidates, and how
+// to act on them.
+type modelAnswer struct {
+	Summary     string `json:"summary"`
+	Suggestions []struct {
+		ID     int    `json:"id"`
+		Action string `json:"action"`
+		Why    string `json:"why"`
+	} `json:"suggestions"`
+}
+
+// applyAnswer joins the model's picks to the rule-based suggestions they refer
+// to. Unknown and repeated IDs are dropped.
+func applyAnswer(p *Plan, ans modelAnswer, into *Advice) {
+	into.Summary = ans.Summary
+	into.Suggestions = []AISuggestion{}
+	seen := map[int]bool{}
+	for _, pick := range ans.Suggestions {
+		if pick.ID < 0 || pick.ID >= len(p.Suggestions) || seen[pick.ID] || len(into.Suggestions) == maxAISuggestions {
+			continue
+		}
+		seen[pick.ID] = true
+		rule := p.Suggestions[pick.ID]
+		into.Suggestions = append(into.Suggestions, AISuggestion{
+			Title:          rule.Title,
+			Action:         pick.Action,
+			Category:       rule.Category,
+			MonthlySavings: rule.MonthlySavings,
+			Why:            pick.Why,
+		})
 	}
 }
 
@@ -235,21 +291,23 @@ func (g *GeminiAdviser) Advise(ctx context.Context, p *Plan) (*Advice, error) {
 	}
 
 	advice := &Advice{Model: g.client.Model()}
+	var ans modelAnswer
 	resp, err := g.client.GenerateJSON(ctx, vertex.Request{
 		System:         adviceSystem,
 		Parts:          vertex.Text(prompt),
 		Schema:         adviceSchema(),
 		ThinkingBudget: vertex.NoThinking(),
 		Temperature:    vertex.Temperature(0.2),
-	}, advice)
+	}, &ans)
 	if resp != nil {
 		advice.TokensIn, advice.TokensOut = resp.Usage.In, resp.Usage.Out
 	}
 	if err != nil {
 		return advice, fmt.Errorf("gemini advice: %w", err)
 	}
-	if len(advice.Suggestions) > maxAISuggestions {
-		advice.Suggestions = advice.Suggestions[:maxAISuggestions]
+	applyAnswer(p, ans, advice)
+	if len(advice.Suggestions) == 0 {
+		return advice, errors.New("gemini advice: the model picked no known candidate")
 	}
 	return advice, nil
 }

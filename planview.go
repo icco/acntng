@@ -53,28 +53,58 @@ func reviewMonthFromRequest(r *http.Request, now time.Time) (time.Time, error) {
 	return monthFromRequest(r, now)
 }
 
-// advisedPlan builds the plan and attaches advice. An advice failure is
+// advisedPlan builds the plan and attaches advice. Only generate spends a
+// model call; otherwise the stored advice is read. An advice failure is
 // returned beside the plan rather than instead of it.
-func (s *Server) advisedPlan(ctx context.Context, review, now time.Time, refresh bool) (*Plan, error, error) {
+func (s *Server) advisedPlan(ctx context.Context, review, now time.Time, generate bool) (*Plan, error, error) {
 	p, err := s.plan(ctx, review, now)
 	if err != nil {
 		return nil, err, nil
 	}
 
-	advice, adviceErr := s.Coach.For(ctx, p, refresh, now)
 	out := *p
-	out.Advice = advice
+	var adviceErr error
+	if generate {
+		out.Advice, adviceErr = s.Coach.Generate(ctx, p, now)
+	}
+	if out.Advice == nil {
+		stored, err := s.Coach.Stored(ctx, p.Month)
+		out.Advice, adviceErr = stored, errors.Join(adviceErr, err)
+	}
 	return &out, nil, adviceErr
 }
 
-func adviceMessage(err error) string {
+// Advice outcomes carried across the redirect after a refresh.
+const (
+	adviceBudget = "budget"
+	adviceEmpty  = "empty"
+	adviceFailed = "failed"
+)
+
+// adviceCode reduces an advice error to something safe to put in a URL.
+func adviceCode(err error) string {
 	switch {
 	case err == nil:
 		return ""
 	case errors.Is(err, ErrAdviceBudget):
-		return "This month's AI calls are used up, so the suggestions below are rule-based only."
+		return adviceBudget
+	case errors.Is(err, ErrNothingToAdvise):
+		return adviceEmpty
 	default:
-		return "The AI advice could not be generated; the suggestions below are rule-based only."
+		return adviceFailed
+	}
+}
+
+func adviceMessage(code string) string {
+	switch code {
+	case "":
+		return ""
+	case adviceBudget:
+		return "This month's AI calls are used up, so no new advice was generated."
+	case adviceEmpty:
+		return "There is nothing to ask the model about for this month."
+	default:
+		return "The AI advice could not be generated."
 	}
 }
 
@@ -95,11 +125,14 @@ func (s *Server) handlePlanPage(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not read from Lunch Money", http.StatusBadGateway)
 		return
 	}
+	// A failed refresh arrives as a code on the redirect back here.
+	code := r.URL.Query().Get("advice")
 	if adviceErr != nil {
-		log.Warnw("no fresh advice", zap.Error(adviceErr))
+		log.Warnw("could not read stored advice", zap.Error(adviceErr))
+		code = adviceFailed
 	}
 
-	v := &planView{Plan: p, AIEnabled: s.Coach != nil, AdviceErr: adviceMessage(adviceErr)}
+	v := &planView{Plan: p, AIEnabled: s.Coach != nil, AdviceErr: adviceMessage(code)}
 	for _, line := range p.Categories {
 		if line.Fixed {
 			v.Fixed = append(v.Fixed, line)
@@ -141,15 +174,15 @@ func (s *Server) handlePlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if adviceErr != nil {
-		log.Warnw("no fresh advice", zap.Error(adviceErr))
-		p.Notes = append(append([]string{}, p.Notes...), adviceMessage(adviceErr))
+		log.Warnw("could not read stored advice", zap.Error(adviceErr))
+		p.Notes = append(append([]string{}, p.Notes...), adviceMessage(adviceCode(adviceErr)))
 	}
 
 	render.JSON(log, w, http.StatusOK, p)
 }
 
 // handleAdviceRefresh spends one model call on new advice, then returns to the
-// page. The redirect is relative because the service is mounted on a sub-path
+// page. It is the only route that calls the model. The redirect is relative because the service is mounted on a sub-path
 // it cannot see.
 func (s *Server) handleAdviceRefresh(w http.ResponseWriter, r *http.Request) {
 	log := logging.FromContext(r.Context())
@@ -167,11 +200,13 @@ func (s *Server) handleAdviceRefresh(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not read from Lunch Money", http.StatusBadGateway)
 		return
 	}
+	location := "./?month=" + monthStart(review).Format(monthKey)
 	if adviceErr != nil {
 		log.Warnw("advice refresh failed", zap.Error(adviceErr))
+		location += "&advice=" + adviceCode(adviceErr)
 	}
 
-	w.Header().Set("Location", "./?month="+monthStart(review).Format(monthKey))
+	w.Header().Set("Location", location)
 	w.WriteHeader(http.StatusSeeOther)
 }
 
@@ -192,7 +227,11 @@ func printPlan(out io.Writer, p *Plan) error {
 	if a := p.Advice; a != nil {
 		fmt.Fprintf(w, "\nADVICE (%s, %d in / %d out tokens)\n  %s\n", a.Model, a.TokensIn, a.TokensOut, a.Summary)
 		for _, s := range a.Suggestions {
-			fmt.Fprintf(w, "  - %s (%s/mo): %s\n", s.Title, money(s.MonthlySavings), s.Action)
+			saving := ""
+			if s.MonthlySavings != nil {
+				saving = fmt.Sprintf(" (%s/mo)", money(*s.MonthlySavings))
+			}
+			fmt.Fprintf(w, "  - %s%s: %s %s\n", s.Title, saving, s.Action, s.Why)
 		}
 	}
 
