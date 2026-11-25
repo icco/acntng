@@ -129,46 +129,57 @@ func changes(p *Plan, charges []charge, scale map[string]float64, b billResult, 
 	for i := range p.Caps {
 		capOf[p.Caps[i].Category] = &p.Caps[i]
 	}
-	lower := func(cat string, by float64) {
-		if c := capOf[cat]; c != nil {
-			c.Cap = round2(max(c.Cap-by, 0))
+	// lower takes up to by off a cap and returns what it actually took, so a
+	// change never claims more than its cap held.
+	lower := func(cat string, by float64) float64 {
+		c := capOf[cat]
+		if c == nil {
+			return 0
 		}
+		took := min(by, c.Cap)
+		c.Cap = round2(c.Cap - took)
+		return round2(took)
 	}
 
 	var out []Change
 	for _, ch := range feeChanges(charges, p.Lately, scale) {
-		lower(feesName, ch.Saving)
-		out = append(out, ch)
+		if ch.Saving = lower(feesName, ch.Saving); ch.Saving >= minFee {
+			out = append(out, ch)
+		}
 	}
 
 	if !opts.Since.IsZero() {
 		since := monthStart(opts.Since).Format(monthKey)
-		var olds []BillLine
-		for _, l := range p.Bills {
-			if !l.Debt && !l.Occasional && l.FirstSeen < since && housing.MatchString(l.Category) {
-				olds = append(olds, l)
-			}
+		old := func(l BillLine) bool {
+			return l.FirstSeen < since && housing.MatchString(l.Category) && l.Monthly >= minFee
 		}
-		for _, l := range b.recurring {
-			if l.FirstSeen < since && housing.MatchString(l.Category) {
-				olds = append(olds, l)
-			}
-		}
-		for _, l := range olds {
-			if l.Monthly < minFee {
-				continue
-			}
-			if c := capOf[l.Category]; c != nil {
-				lower(l.Category, l.Monthly)
-			}
-			out = append(out, Change{
+		oldBill := func(l BillLine, saving float64) Change {
+			return Change{
 				Kind:     KindOldBill,
 				Category: l.Category,
 				Title:    fmt.Sprintf("Cancel %s if it is for the old place", l.Name),
 				Detail: fmt.Sprintf("Still charging about $%s a month, and it started before your move in %s.",
 					money(l.Monthly), describeMonth(since)),
-				Saving: l.Monthly,
-			})
+				Saving: saving,
+			}
+		}
+		for i := range p.Bills {
+			if l := &p.Bills[i]; !l.Debt && !l.Occasional && old(*l) {
+				l.Plan = 0
+				out = append(out, oldBill(*l, l.Monthly))
+			}
+		}
+		keys := make([]string, 0, len(b.recurring))
+		for k := range b.recurring {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			if l := b.recurring[k]; old(l) {
+				if took := lower(l.Category, l.Monthly); took >= minFee {
+					out = append(out, oldBill(l, took))
+				}
+			}
 		}
 	}
 
@@ -196,18 +207,12 @@ func changes(p *Plan, charges []charge, scale map[string]float64, b billResult, 
 		c.Cap = c.Usual
 	}
 
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Saving > out[j].Saving })
-
-	saved := 0.0
-	for _, ch := range out {
-		saved += ch.Saving
-	}
-	gap := p.Totals.Target - (p.Totals.Unchanged + saved)
-	out = cuts(p, gap, out)
+	out = cuts(p, p.Totals.Target-p.planned(), out)
 
 	for i := range out {
 		out[i].Saving = round2(out[i].Saving)
 	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Saving > out[j].Saving })
 	return out
 }
 
@@ -238,7 +243,8 @@ func cuts(p *Plan, gap float64, out []Change) []Change {
 		// the lower figure.
 		if i := slices.IndexFunc(out, func(ch Change) bool { return ch.Kind == KindCreep && ch.Category == c.Category }); i >= 0 {
 			out[i].Title = fmt.Sprintf("Hold %s to $%s", c.Category, money(target))
-			out[i].Detail += fmt.Sprintf(" To reach the target, go down to your leanest quarter of months, $%s.", money(c.Low))
+			out[i].Detail += fmt.Sprintf(" To reach the target, hold it to $%s; a quarter of your months came in at $%s or less.",
+				money(target), money(c.Low))
 			out[i].Saving += saving
 			c.Cap = target
 			continue
@@ -247,8 +253,8 @@ func cuts(p *Plan, gap float64, out []Change) []Change {
 			Kind:     KindCut,
 			Category: c.Category,
 			Title:    fmt.Sprintf("Hold %s to $%s", c.Category, money(target)),
-			Detail: fmt.Sprintf("A quarter of your months came in at $%s or less; the plan allows $%s.",
-				money(c.Low), money(c.Cap)),
+			Detail: fmt.Sprintf("Lately $%s a month. Holding it to $%s reaches the target; a quarter of your months came in at $%s or less.",
+				money(c.Lately), money(target), money(c.Low)),
 			Saving: saving,
 		})
 		c.Cap = target

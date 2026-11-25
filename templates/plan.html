@@ -54,7 +54,7 @@
           <tr class="band"><td colspan="4">Income</td></tr>
           {{range .Income}}<tr><td>{{.Name}}</td><td></td><td></td><td class="num">{{money .Monthly}}</td></tr>{{end}}
           <tr class="band"><td colspan="4">Bills</td></tr>
-          {{range .Bills}}<tr><td>{{.Name}}<small>{{.Category}}</small></td><td></td><td></td><td class="num">{{money .Monthly}}</td></tr>{{end}}
+          {{range .Bills}}<tr><td>{{.Name}}<small>{{.Category}}</small></td><td class="num">{{money .Monthly}}</td><td></td><td class="num{{if lt .Plan .Monthly}} good{{end}}">{{money .Plan}}</td></tr>{{end}}
           <tr class="band"><td colspan="4">Spending</td></tr>
           {{range .Caps}}
           <tr>

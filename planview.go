@@ -90,11 +90,18 @@ func printPlan(out io.Writer, p *Plan) error {
 	for _, l := range p.Income {
 		fmt.Fprintf(w, "    %s\t%s\n", l.Name, money(l.Monthly))
 	}
-	fmt.Fprintf(w, "  Bills\t%s\n", money(-t.Bills))
+	bills, spending := 0.0, 0.0
 	for _, l := range p.Bills {
-		fmt.Fprintf(w, "    %s\t%s\n", l.Name, money(l.Monthly))
+		bills += l.Plan
 	}
-	fmt.Fprintf(w, "  Spending\t%s\n", money(-(t.Spending - t.Savings)))
+	for _, c := range p.Caps {
+		spending += c.Cap
+	}
+	fmt.Fprintf(w, "  Bills\t%s\n", money(-bills))
+	for _, l := range p.Bills {
+		fmt.Fprintf(w, "    %s\t%s\t(lately %s)\n", l.Name, money(l.Plan), money(l.Monthly))
+	}
+	fmt.Fprintf(w, "  Spending\t%s\n", money(-spending))
 	for _, c := range p.Caps {
 		fmt.Fprintf(w, "    %s\t%s\t(lately %s, usual %s)\n", c.Category, money(c.Cap), money(c.Lately), money(c.Usual))
 	}
@@ -131,6 +138,9 @@ func verdict(p *Plan) string {
 	t := p.Totals
 	month := describeMonth(p.PlanFor)
 	switch {
+	case len(p.Changes) == 0 && t.Short > 0:
+		return fmt.Sprintf("%s leaves %s, $%s short of your $%s target, and no change found here closes it.",
+			month, signedDollars(t.Planned), money(t.Short), money(t.Target))
 	case len(p.Changes) == 0:
 		return fmt.Sprintf("%s leaves %s with nothing to change.", month, signedDollars(t.Unchanged))
 	case t.Short > 0:

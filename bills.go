@@ -116,6 +116,22 @@ func (g *payeeCharges) regularMonthly(now time.Time) float64 {
 	return round2(median(v))
 }
 
+// cadenceDays is the median gap between the payee's regular charges.
+func (g *payeeCharges) cadenceDays() float64 {
+	var gaps []float64
+	var prev time.Time
+	for i, ch := range g.charges {
+		if g.spike[i] {
+			continue
+		}
+		if !prev.IsZero() && ch.date.Sub(prev).Hours() >= 24*7 {
+			gaps = append(gaps, ch.date.Sub(prev).Hours()/24)
+		}
+		prev = ch.date
+	}
+	return median(gaps)
+}
+
 func (g *payeeCharges) months(from time.Time) map[string]bool {
 	out := map[string]bool{}
 	for i, ch := range g.charges {
@@ -134,6 +150,10 @@ func bills(charges []charge, now time.Time, months []string, loans []Loan) billR
 	lookback := now.AddDate(0, 0, -billLookbackDays)
 	quiet := now.AddDate(0, 0, -stoppedAfterDays)
 	occasional := map[string]float64{}
+	complete := map[string]bool{}
+	for _, m := range months {
+		complete[m] = true
+	}
 
 	for _, g := range groupByPayee(charges, func(ch charge) bool { return ch.fixed }) {
 		last := g.charges[len(g.charges)-1]
@@ -157,13 +177,10 @@ func bills(charges []charge, now time.Time, months []string, loans []Loan) billR
 		monthlyNow := len(recent) >= recurringMinMonths && !last.date.Before(quiet)
 		if !debt && !monthlyNow && len(seen) <= occasionalMaxMonths {
 			for i, ch := range g.charges {
-				if !g.spike[i] {
+				if !g.spike[i] && complete[ch.month] {
 					occasional[ch.category] += ch.amount
 				}
 			}
-			continue
-		}
-		if last.date.Before(lookback) {
 			continue
 		}
 
@@ -174,20 +191,33 @@ func bills(charges []charge, now time.Time, months []string, loans []Loan) billR
 				res.stopped = append(res.stopped, StoppedBill{Name: g.name, Category: line.Category, Monthly: amount, Reason: reason})
 			}
 		}
+		gap := g.cadenceDays()
 
 		balance, matched := loanBalance(g.key, loans)
 		switch {
-		case last.date.Before(quiet):
-			stop("nothing charged since " + last.date.Format("2 Jan"))
 		case debt && matched && balance <= 0:
 			stop("paid off")
-		case debt && g.spike[len(g.spike)-1] && !(matched && balance > 0):
-			stop("paid off on " + last.date.Format("2 Jan"))
-		case !debt && len(recent) < recurringMinMonths:
-			// Charged before but not monthly: quarterly or ended. Neither is
-			// next month's bill, and neither is spread as occasional.
-		case amount > 0:
-			res.lines = append(res.lines, line)
+		case monthlyNow || (debt && !last.date.Before(quiet)):
+			if amount > 0 {
+				res.lines = append(res.lines, line)
+			}
+		case !debt && gap > stoppedAfterDays && now.Sub(last.date).Hours()/24 <= gap*1.5:
+			// Quarterly or yearly and still running: set aside its average
+			// month so the next charge is covered.
+			total := 0.0
+			for i, ch := range g.charges {
+				if !g.spike[i] && complete[ch.month] {
+					total += ch.amount
+				}
+			}
+			line.Monthly = round2(total / float64(len(months)))
+			line.Name = fmt.Sprintf("%s, about every %d months", g.name, int(gap/30+0.5))
+			if line.Monthly >= 1 {
+				res.lines = append(res.lines, line)
+			}
+		case last.date.Before(lookback):
+		default:
+			stop("nothing charged since " + last.date.Format("2 Jan"))
 		}
 	}
 

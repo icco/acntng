@@ -84,7 +84,9 @@ type BillLine struct {
 	Name     string  `json:"name"`
 	Category string  `json:"category"`
 	Monthly  float64 `json:"monthly"`
-	Debt     bool    `json:"debt"`
+	// Plan is what the plan budgets for it: Monthly, or zero once cancelled.
+	Plan float64 `json:"plan"`
+	Debt bool    `json:"debt"`
 	// FirstSeen is the first month the payee charged in the history read.
 	FirstSeen string `json:"first_seen"`
 	// Occasional marks a category's irregular costs, budgeted at their usual
@@ -200,7 +202,7 @@ type charge struct {
 
 // deposit is one paycheck.
 type deposit struct {
-	month  string
+	date   time.Time
 	source string
 	amount float64
 }
@@ -258,7 +260,7 @@ func BuildPlan(ctx context.Context, c PlanFetcher, opts PlanOptions) (*Plan, err
 		active[ch.month] = true
 	}
 	for _, d := range deposits {
-		active[d.month] = true
+		active[d.date.Format(monthKey)] = true
 	}
 	for m := start; m.Before(current); m = m.AddDate(0, 1, 0) {
 		key := m.Format(monthKey)
@@ -274,6 +276,10 @@ func BuildPlan(ctx context.Context, c PlanFetcher, opts PlanOptions) (*Plan, err
 	}
 
 	scale := latelyMonths(p, opts, now)
+	if len(p.Lately) == 0 {
+		p.Notes = append(p.Notes, "no month since ACNTNG_SINCE has enough data yet, so there is nothing to plan from")
+		return p, nil
+	}
 
 	var loans []Loan
 	if rep, err := BuildReport(ctx, c, now, Options{IncludeCredit: true}); err != nil {
@@ -282,7 +288,7 @@ func BuildPlan(ctx context.Context, c PlanFetcher, opts PlanOptions) (*Plan, err
 		loans = rep.Loans
 	}
 
-	p.Income = income(deposits, p.Lately, scale)
+	p.Income = income(deposits, p.Lately, scale, now)
 	b := bills(charges, now, p.Months, loans)
 	p.Bills, p.Stopped, p.OneOffs = b.lines, b.stopped, b.oneOffs
 	p.OneOffs = append(p.OneOffs, markOneOffs(charges, scale)...)
@@ -296,8 +302,9 @@ func BuildPlan(ctx context.Context, c PlanFetcher, opts PlanOptions) (*Plan, err
 	for _, l := range p.Income {
 		t.Income += l.Monthly
 	}
-	for _, l := range p.Bills {
-		t.Bills += l.Monthly
+	for i := range p.Bills {
+		p.Bills[i].Plan = p.Bills[i].Monthly
+		t.Bills += p.Bills[i].Monthly
 	}
 	for _, l := range p.Caps {
 		t.Spending += l.Lately
@@ -306,11 +313,8 @@ func BuildPlan(ctx context.Context, c PlanFetcher, opts PlanOptions) (*Plan, err
 	t.Unchanged = round2(t.Income - t.Bills - t.Spending)
 
 	p.Changes = changes(p, charges, scale, b, opts)
-	for _, ch := range p.Changes {
-		t.Savings += ch.Saving
-	}
-	t.Savings = round2(t.Savings)
-	t.Planned = round2(t.Unchanged + t.Savings)
+	t.Planned = p.planned()
+	t.Savings = round2(t.Planned - t.Unchanged)
 	t.Short = round2(max(t.Target-t.Planned, 0))
 
 	p.notes(charges, scale, skipped)
@@ -344,7 +348,7 @@ func classify(txs []*lunchmoney.Transaction, byID map[int64]*lunchmoney.Category
 		if cat != nil && cat.IsIncome {
 			amount := -tx.ToBase
 			if amount > 0 && (opts.PaycheckMatch.MatchString(tx.Payee) || opts.PaycheckMatch.MatchString(tx.OriginalName)) {
-				deposits = append(deposits, deposit{month: month, source: sourceName(tx.Payee), amount: amount})
+				deposits = append(deposits, deposit{date: date, source: sourceName(tx.Payee), amount: amount})
 			}
 			continue
 		}
@@ -408,56 +412,75 @@ func fetchTransactions(ctx context.Context, c TransactionFetcher, start, end tim
 
 // latelyMonths picks the months that describe how things are now and returns
 // the factor each is scaled by: one for a complete month, more for the month
-// in progress.
+// in progress. With Since set, nothing before it counts.
 func latelyMonths(p *Plan, opts PlanOptions, now time.Time) map[string]float64 {
 	scale := map[string]float64{}
+	since := ""
 	if !opts.Since.IsZero() {
-		since := monthStart(opts.Since).Format(monthKey)
+		since = monthStart(opts.Since).Format(monthKey)
 		for _, m := range p.Months {
 			if m >= since {
 				p.Lately = append(p.Lately, m)
 			}
 		}
-	}
-	if len(p.Lately) == 0 {
+	} else {
 		p.Lately = append(p.Lately, p.Months[max(len(p.Months)-latelyFallbackMonths, 0):]...)
 	}
 	for _, m := range p.Lately {
 		scale[m] = 1
 	}
-	if now.Day() >= partialMonthMinDay {
+	if key := now.Format(monthKey); now.Day() >= partialMonthMinDay && key >= since {
 		days := monthStart(now).AddDate(0, 1, -1).Day()
-		key := now.Format(monthKey)
 		p.Lately = append(p.Lately, key)
 		scale[key] = float64(days) / float64(now.Day())
 	}
 	return scale
 }
 
-// income expects each employer to pay what it paid in a typical recent
-// month. A source that has not paid lately is not counted on.
-func income(deposits []deposit, lately []string, scale map[string]float64) []IncomeLine {
-	bySource := map[string]map[string]float64{}
-	for _, d := range deposits {
-		if bySource[d.source] == nil {
-			bySource[d.source] = map[string]float64{}
-		}
-		bySource[d.source][d.month] += d.amount
+// income expects each employer still paying to pay what it paid in a typical
+// recent month since it started. A source quiet for 45 days is not counted on.
+func income(deposits []deposit, lately []string, scale map[string]float64, now time.Time) []IncomeLine {
+	type source struct {
+		months      map[string]float64
+		first, last time.Time
 	}
+	bySource := map[string]*source{}
+	for _, d := range deposits {
+		s := bySource[d.source]
+		if s == nil {
+			s = &source{months: map[string]float64{}, first: d.date, last: d.date}
+			bySource[d.source] = s
+		}
+		s.months[d.date.Format(monthKey)] += d.amount
+		if d.date.Before(s.first) {
+			s.first = d.date
+		}
+		if d.date.After(s.last) {
+			s.last = d.date
+		}
+	}
+	quiet := now.AddDate(0, 0, -stoppedAfterDays)
 	out := []IncomeLine{}
-	for name, months := range bySource {
+	for name, s := range bySource {
+		if s.last.Before(quiet) {
+			continue
+		}
+		started := s.first.Format(monthKey)
 		// Pay arrives on a schedule, so the month in progress is only read
 		// when it is all that exists.
-		var v []float64
+		var v, partial []float64
 		for _, m := range lately {
+			if m < started {
+				continue
+			}
 			if scale[m] == 1 {
-				v = append(v, months[m])
+				v = append(v, s.months[m])
+			} else {
+				partial = append(partial, s.months[m])
 			}
 		}
 		if len(v) == 0 {
-			for _, m := range lately {
-				v = append(v, months[m])
-			}
+			v = partial
 		}
 		monthly := round2(median(v))
 		if monthly <= 0 {
@@ -568,4 +591,16 @@ func quantile(v []float64, q float64) float64 {
 		return s[len(s)-1]
 	}
 	return s[lo] + (s[lo+1]-s[lo])*(pos-float64(lo))
+}
+
+// planned is what the month leaves with every bill and cap as planned.
+func (p *Plan) planned() float64 {
+	left := p.Totals.Income
+	for _, l := range p.Bills {
+		left -= l.Plan
+	}
+	for _, c := range p.Caps {
+		left -= c.Cap
+	}
+	return round2(left)
 }

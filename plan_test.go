@@ -535,3 +535,147 @@ func TestPlanOptionsFromEnv(t *testing.T) {
 		t.Error("want an error for a malformed ACNTNG_SINCE")
 	}
 }
+
+func TestBuildPlanReservesForQuarterlyBills(t *testing.T) {
+	c := planFixture()
+	const catInsurance int64 = 60
+	c.categories = append(c.categories, &lunchmoney.Category{ID: catInsurance, Name: "Insurance"})
+	for _, d := range []string{"2025-12-10", "2026-03-10", "2026-06-10", "2026-09-10"} {
+		c.transactions = append(c.transactions, tx(d, "Shield Mutual", 240, catInsurance))
+	}
+	opts := planOpts(1000)
+	opts.Since = time.Time{}
+
+	p := buildFixturePlan(t, c, opts)
+	b := bill(p, "Shield Mutual, about every 3 months")
+	if b == nil || b.Monthly != 80 {
+		t.Errorf("want 960 a year set aside as 80 a month, got %+v", p.Bills)
+	}
+	for _, s := range p.Stopped {
+		if s.Name == "Shield Mutual" {
+			t.Errorf("a quarterly bill due next month was stopped: %+v", s)
+		}
+	}
+}
+
+func TestBuildPlanKeepsADebtWithUnknownBalance(t *testing.T) {
+	c := planFixture()
+	c.manualErr = errors.New("boom")
+	p := buildFixturePlan(t, c, planOpts(1000))
+	if b := bill(p, "Lendco"); b == nil || b.Monthly != 500 {
+		t.Errorf("without a balance an extra payment is not a payoff: %+v", p.Bills)
+	}
+}
+
+func TestBuildPlanBudgetRowsAddUp(t *testing.T) {
+	for _, target := range []float64{1000, 3000, 5000} {
+		p := buildFixturePlan(t, planFixture(), planOpts(target))
+		left := p.Totals.Income
+		for _, b := range p.Bills {
+			left -= b.Plan
+		}
+		for _, c := range p.Caps {
+			left -= c.Cap
+		}
+		if round2(left) != p.Totals.Planned || round2(p.Totals.Planned-p.Totals.Unchanged) != p.Totals.Savings {
+			t.Errorf("target %v: rows leave %v, planned %v, savings %v", target, left, p.Totals.Planned, p.Totals.Savings)
+		}
+		saved := 0.0
+		for i, c := range p.Changes {
+			saved += c.Saving
+			if i > 0 && c.Saving > p.Changes[i-1].Saving {
+				t.Errorf("target %v: changes are not biggest first: %+v", target, p.Changes)
+			}
+		}
+		if round2(saved) != p.Totals.Savings {
+			t.Errorf("target %v: changes save %v, totals say %v", target, saved, p.Totals.Savings)
+		}
+	}
+	if w := bill(buildFixturePlan(t, planFixture(), planOpts(1000)), "Old Town Water"); w == nil || w.Plan != 0 || w.Monthly != 80 {
+		t.Errorf("a cancelled bill keeps its cost and plans zero: %+v", w)
+	}
+}
+
+func TestFeeChangesNeverExceedTheFeesLine(t *testing.T) {
+	c := planFixture()
+	c.transactions = append(c.transactions,
+		tx("2026-09-20", "MONTHLY SERVICE FEE", 100, catFees),
+		tx("2026-10-20", "MONTHLY SERVICE FEE", 100, catFees),
+		tx("2026-10-21", "FOREIGN TRANSACTION FEE", 100, catFees),
+		tx("2026-11-21", "FOREIGN TRANSACTION FEE", 100, catFees),
+	)
+	p := buildFixturePlan(t, c, planOpts(1000))
+	fees := 0.0
+	for _, ch := range p.Changes {
+		if ch.Kind == KindFee {
+			fees += ch.Saving
+		}
+	}
+	if line := capLine(t, p, feesName); round2(fees) > line.Lately || line.Cap < 0 {
+		t.Errorf("fee changes save %v against a fees line of %+v", fees, line)
+	}
+}
+
+func TestBuildPlanSinceThisMonthIgnoresEarlierMonths(t *testing.T) {
+	opts := planOpts(1000)
+	opts.Since = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	p := buildFixturePlan(t, planFixture(), opts)
+	if strings.Join(p.Lately, ",") != "2026-11" {
+		t.Errorf("lately = %v, want only November", p.Lately)
+	}
+
+	opts.Since = time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
+	p = buildFixturePlan(t, planFixture(), opts)
+	if len(p.Lately) != 0 || len(p.Changes) != 0 || !strings.Contains(strings.Join(p.Notes, " "), "ACNTNG_SINCE") {
+		t.Errorf("a future Since should plan nothing and say why: %+v", p)
+	}
+}
+
+func TestIncomeFollowsTheCurrentEmployer(t *testing.T) {
+	c := planFixture()
+	var kept []*lunchmoney.Transaction
+	for _, x := range c.transactions {
+		if strings.HasPrefix(x.Payee, "ACME PAYROLL") && x.Date >= "2026-08-01" {
+			continue
+		}
+		kept = append(kept, x)
+	}
+	for _, m := range []string{"2026-08", "2026-09", "2026-10", "2026-11"} {
+		kept = append(kept, tx(m+"-20", "NEWCO PAYROLL 77 ADA LOVELACE", -7000, catIncome))
+	}
+	c.transactions = kept
+	opts := planOpts(1000)
+	opts.Since = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	p := buildFixturePlan(t, c, opts)
+	if len(p.Income) != 1 || p.Income[0].Name != "NEWCO PAYROLL ADA" || p.Income[0].Monthly != 7000 {
+		t.Errorf("income = %+v, want only the new employer at 7000", p.Income)
+	}
+}
+
+func TestOccasionalCostsIgnoreThePartialMonth(t *testing.T) {
+	c := planFixture()
+	c.transactions = append(c.transactions, tx("2026-11-03", "Clinic Visit", 600, catMedical))
+	p := buildFixturePlan(t, c, planOpts(1000))
+	if occ := bill(p, "Occasional medical"); occ == nil || occ.Monthly != 50 {
+		t.Errorf("occasional medical = %+v, want 50 from complete months only", occ)
+	}
+}
+
+func TestCutDetailsMatchTheirTitle(t *testing.T) {
+	p := buildFixturePlan(t, planFixture(), planOpts(3000))
+	g := change(p, KindCut, "Groceries")
+	if g == nil || !strings.Contains(g.Detail, "Holding it to $335") {
+		t.Errorf("groceries cut = %+v", g)
+	}
+	if r := change(p, KindCreep, "Restaurants"); r == nil || !strings.Contains(r.Detail, "hold it to $200") {
+		t.Errorf("restaurants = %+v", r)
+	}
+}
+
+func TestVerdictWithNothingToChangeButShort(t *testing.T) {
+	p := &Plan{PlanFor: "2026-12", Totals: PlanTotals{Income: 6000, Bills: 5500, Unchanged: 500, Planned: 500, Target: 1000, Short: 500}}
+	if got := verdict(p); !strings.Contains(got, "$500 short of your $1,000 target") {
+		t.Errorf("verdict = %q", got)
+	}
+}
