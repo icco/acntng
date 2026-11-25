@@ -45,14 +45,16 @@ func (s *Server) ranked(ctx context.Context, p *Plan, now time.Time) *Plan {
 	prompt, err := rankPrompt(p, since)
 	var r *Ranking
 	if err == nil {
-		r, err = s.rank.get(ctx, s.Ranker, prompt, now)
+		r, err = s.rank.get(ctx, s.Ranker, prompt, func(r *Ranking) error {
+			if len(r.clean(p)) == 0 {
+				return errors.New("the model picked no known option")
+			}
+			return nil
+		}, now)
 	}
 	var picks []Pick
 	if err == nil {
 		picks = r.clean(p)
-		if len(picks) == 0 {
-			err = errors.New("the model picked no known option")
-		}
 	}
 	if err != nil {
 		if s.Log != nil {

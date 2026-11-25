@@ -205,3 +205,63 @@ func TestRankerNeedsTheProxy(t *testing.T) {
 		t.Errorf("no key: ranker %v, calls %d, err %v", r, n, err)
 	}
 }
+
+func option(t *testing.T, p *Plan, title string) Option {
+	t.Helper()
+	for _, o := range p.Options {
+		if o.Title == title {
+			return o
+		}
+	}
+	t.Fatalf("no option %q", title)
+	return Option{}
+}
+
+func TestMerchantSavingMatchesTheCategoryMedian(t *testing.T) {
+	p := buildFixturePlan(t, planFixture(), planOpts(1000))
+	// Restaurants is all Noodle Cart: lately 700, 700 and 600 scaled, a
+	// median of 700. Halved, the median is 350.
+	if got := option(t, p, "Halve Noodle Cart").Saving; got != 350 {
+		t.Errorf("halving saves %v, want 350", got)
+	}
+}
+
+func TestCategoryThenMerchantIsCountedOnce(t *testing.T) {
+	r := &fakeRanker{subjects: []string{"Restaurants", "Halve Noodle Cart"}}
+	s, _ := rankedServer(t, r, 4)
+	p, err := s.plan(context.Background(), planNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Changes) != 1 || p.Changes[0].Category != "Restaurants" || p.Changes[0].Saving != 300 {
+		t.Errorf("changes = %+v, want only the category's 300", p.Changes)
+	}
+}
+
+func TestUnusableAnswerIsRetriedAfterAnHour(t *testing.T) {
+	r := &fakeRanker{subjects: []string{"Nothing Real"}}
+	s, _ := rankedServer(t, r, 4)
+	for _, at := range []time.Duration{0, time.Minute} {
+		if _, err := s.plan(context.Background(), planNow.Add(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r.calls != 1 {
+		t.Fatalf("calls = %d, want 1 within the hour", r.calls)
+	}
+	s.planCache = cache[*Plan]{}
+	if _, err := s.plan(context.Background(), planNow.Add(2*time.Hour)); err != nil || r.calls != 2 {
+		t.Errorf("an unusable answer should be retried after an hour: %d calls", r.calls)
+	}
+}
+
+func TestRankPromptNamesEachOptionsCategory(t *testing.T) {
+	p := buildFixturePlan(t, planFixture(), planOpts(1000))
+	prompt, err := rankPrompt(p, "2026-09")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(prompt, `"subject":"Noodle Cart","category":"Restaurants"`) {
+		t.Errorf("prompt does not tie Noodle Cart to Restaurants: %.400s", prompt)
+	}
+}

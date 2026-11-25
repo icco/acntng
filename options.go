@@ -115,19 +115,43 @@ func options(p *Plan, charges []charge, scale map[string]float64, b billResult, 
 		}
 	}
 
+	// A merchant's saving is what it takes off its category's lately
+	// figure, a median of scaled months, so it is worked out the same way.
+	catMonths := map[string]map[string]float64{}
+	for _, ch := range charges {
+		if ch.fixed || ch.fee != "" || ch.oneOff {
+			continue
+		}
+		if catMonths[ch.category] == nil {
+			catMonths[ch.category] = map[string]float64{}
+		}
+		catMonths[ch.category][ch.month] += ch.amount
+	}
+	merchantSaving := func(m merchantStat, keep func(float64) float64) float64 {
+		cat := catMonths[m.category]
+		before := max(median(monthly(cat, p.Lately, scale)), 0)
+		adjusted := map[string]float64{}
+		for _, month := range p.Lately {
+			adjusted[month] = cat[month] - m.byMonth[month] + keep(m.byMonth[month])
+		}
+		return before - max(median(monthly(adjusted, p.Lately, scale)), 0)
+	}
 	for _, m := range merchantStats(charges, p.Months, scale, b) {
-		evidence := fmt.Sprintf("Lately %.0f purchases and $%s a month; usual $%s a month.", m.count, money(m.lately), money(m.usual))
+		evidence := fmt.Sprintf("Lately %.0f purchases and $%s a month in %s; usual $%s a month.", m.count, money(m.lately), m.category, money(m.usual))
 		if m.lately-m.usual >= minOption && m.usual > 0 {
+			usual := m.usual
 			add(Option{
 				Kind: OptionMerchant, Subject: m.name, Category: m.category,
 				Title:  fmt.Sprintf("Bring %s back to $%s a month", m.name, money(m.usual)),
-				Detail: evidence, Saving: m.lately - m.usual,
+				Detail: evidence,
+				Saving: merchantSaving(m, func(v float64) float64 { return min(v, usual) }),
 			})
 		}
 		add(Option{
 			Kind: OptionMerchant, Subject: m.name, Category: m.category,
 			Title:  fmt.Sprintf("Halve %s", m.name),
-			Detail: evidence, Saving: m.lately / 2,
+			Detail: evidence,
+			Saving: merchantSaving(m, func(v float64) float64 { return v / 2 }),
 		})
 	}
 
@@ -140,6 +164,8 @@ func options(p *Plan, charges []charge, scale map[string]float64, b billResult, 
 type merchantStat struct {
 	name, category       string
 	lately, usual, count float64
+	// byMonth is the merchant's spending in each lately month, unscaled.
+	byMonth map[string]float64
 }
 
 // merchantStats finds the merchants that take the most chosen spending
@@ -168,11 +194,12 @@ func merchantStats(charges []charge, months []string, scale map[string]float64, 
 		}
 		a := by[ch.key+"\x00"+ch.category]
 		if a == nil {
-			a = &agg{merchantStat: merchantStat{name: displayName(ch.payee), category: ch.category}}
+			a = &agg{merchantStat: merchantStat{name: displayName(ch.payee), category: ch.category, byMonth: map[string]float64{}}}
 			by[ch.key+"\x00"+ch.category] = a
 		}
 		if _, ok := scale[ch.month]; ok {
 			a.recent += ch.amount
+			a.byMonth[ch.month] += ch.amount
 			a.n++
 		}
 		if inHistory[ch.month] {
@@ -195,7 +222,10 @@ func merchantStats(charges []charge, months []string, scale map[string]float64, 
 		if out[i].lately != out[j].lately {
 			return out[i].lately > out[j].lately
 		}
-		return out[i].name < out[j].name
+		if out[i].name != out[j].name {
+			return out[i].name < out[j].name
+		}
+		return out[i].category < out[j].category
 	})
 	if len(out) > maxMerchants {
 		out = out[:maxMerchants]
@@ -233,9 +263,17 @@ func (p *Plan) apply(picks []Pick) {
 
 	p.Changes = []Change{}
 	done := map[string]bool{}
+	// capped holds categories already set to a target. A merchant or
+	// subscription picked after that would take its saving from money the
+	// target already removed, so it is skipped. The other order is safe: the
+	// category then gives only what is left above its target.
+	capped := map[string]bool{}
 	for _, pick := range picks {
 		o, ok := byID[pick.ID]
 		if !ok || done[o.Kind+o.Subject+"\x00"+o.Category] {
+			continue
+		}
+		if (o.Kind == OptionMerchant || o.Kind == OptionSubscription) && capped[o.Category] {
 			continue
 		}
 		took := 0.0
@@ -254,6 +292,7 @@ func (p *Plan) apply(picks []Pick) {
 				took = round2(c.Cap - o.Target)
 				c.Cap = o.Target
 			}
+			capped[o.Category] = true
 		case OptionMerchant, OptionSubscription:
 			took = lower(o.Category, o.Saving)
 		}

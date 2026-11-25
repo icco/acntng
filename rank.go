@@ -21,7 +21,9 @@ const (
 	defaultAICallsPerDay = 4
 	maxPicks             = 7
 	maxWhy               = 400
-	rankTimeout          = 60 * time.Second
+	// rankTimeout leaves room inside the server's 30 second write timeout
+	// for the rules to answer when the model is slow.
+	rankTimeout = 20 * time.Second
 	// rankRetryAfter is how long a failed ranking is remembered before the
 	// model is asked again.
 	rankRetryAfter = time.Hour
@@ -90,12 +92,13 @@ type rankCategory struct {
 }
 
 type rankOption struct {
-	ID      int     `json:"id"`
-	Kind    string  `json:"kind"`
-	Subject string  `json:"subject"`
-	Action  string  `json:"action"`
-	Facts   string  `json:"facts"`
-	Saving  float64 `json:"monthly_saving"`
+	ID       int     `json:"id"`
+	Kind     string  `json:"kind"`
+	Subject  string  `json:"subject"`
+	Category string  `json:"category,omitempty"`
+	Action   string  `json:"action"`
+	Facts    string  `json:"facts"`
+	Saving   float64 `json:"monthly_saving"`
 }
 
 // rankPrompt is everything sent to the model: totals, category and merchant
@@ -113,7 +116,7 @@ func rankPrompt(p *Plan, since string) (string, error) {
 		f.Spending = append(f.Spending, rankCategory{Name: c.Category, Usual: c.Usual, Lately: c.Lately, Low: c.Low, History: c.History})
 	}
 	for _, o := range p.Options {
-		f.Options = append(f.Options, rankOption{ID: o.ID, Kind: o.Kind, Subject: o.Subject, Action: o.Title, Facts: o.Detail, Saving: o.Saving})
+		f.Options = append(f.Options, rankOption{ID: o.ID, Kind: o.Kind, Subject: o.Subject, Category: o.Category, Action: o.Title, Facts: o.Detail, Saving: o.Saving})
 	}
 	b, err := json.Marshal(f)
 	if err != nil {
@@ -206,7 +209,9 @@ var ErrRankBudget = errors.New("today's model calls are used up")
 // finishTimeout bounds the write that records how a call ended.
 const finishTimeout = 10 * time.Second
 
-func (c *rankCache) get(ctx context.Context, r Ranker, prompt string, now time.Time) (*Ranking, error) {
+// get returns the ranking for prompt. check rejects an answer before it is
+// kept, so an unusable one is retried after an hour like any failure.
+func (c *rankCache) get(ctx context.Context, r Ranker, prompt string, check func(*Ranking) error, now time.Time) (*Ranking, error) {
 	sum := sha256.Sum256([]byte(prompt))
 	key := hex.EncodeToString(sum[:])
 
@@ -244,6 +249,9 @@ func (c *rankCache) get(ctx context.Context, r Ranker, prompt string, now time.T
 	ranking, rankErr := r.Rank(callCtx, prompt)
 	if rankErr == nil && (ranking == nil || len(ranking.Picks) == 0) {
 		rankErr = errors.New("the model picked nothing")
+	}
+	if rankErr == nil && check != nil {
+		rankErr = check(ranking)
 	}
 	failure = ""
 	if rankErr != nil {
