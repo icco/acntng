@@ -2,43 +2,66 @@
 
 Why have vowels when you're in debt
 
-A [Lunch Money](https://lunchmoney.app) budget dashboard: budget vs actual for a month, plus loan balances and derived monthly payments. Runs on `mist` behind Caddy, which supplies the auth.
+Reads paychecks and spending from [Lunch Money](https://lunchmoney.app), works out what a normal month costs, and says what to do differently next month to spend less. Runs on `mist` behind Caddy, which supplies the auth.
 
-Nothing is stored — every figure is read live per request and cached five minutes.
+## Usage
 
-## Endpoints
+```console
+$ export LUNCH_MONEY_KEY=...  # or in .env
+$ task run                    # http://localhost:8080/
+$ task cli                    # the same plan in the terminal
+$ task cli -- -month 2026-09 -json
+$ task cli -- -ai             # also ask the model
+$ task cli -- -debts          # the budget and debt report
+```
 
 | Path | |
 | --- | --- |
-| `GET /` | Dashboard: the month's budget, then every debt. HTML. |
+| `GET /` | The plan. HTML. |
+| `GET /plan` | The plan. JSON. |
+| `POST /advice` | Spend one model call on fresh advice, then redirect to `/`. |
+| `GET /dashboard` | Budget vs actual, and every debt. HTML. |
 | `GET /budget` | The month's budget. JSON. |
 | `GET /loans` | Loan balances and payments. JSON. |
 | `GET /healthz` | Liveness |
 | `GET /metrics` | Prometheus |
 
-`/` and `/budget` take `month=YYYY-MM`, defaulting to the current month. `/loans` takes `include_credit` and `include_liabilities`, both default `false`; the dashboard always includes credit, since on a debt view the cards are usually the expensive part.
+`/`, `/plan` and `/advice` take `month=YYYY-MM`, the month to review, defaulting to the last complete month. `/dashboard` and `/budget` take the same param and default to the current month. `/loans` takes `include_credit` and `include_liabilities`, both default `false`.
 
-```console
-$ curl -s "https://newyork.welch.io/acntng/budget?month=2026-09" | jq '.totals'
-```
+## The plan
 
-```json
-{
-  "income_budgeted": 5000,
-  "income_actual": 2500,
-  "income_basis": "budgeted",
-  "debt_budgeted": 1750,
-  "debt_spent": 1500,
-  "living_budgeted": 2000,
-  "living_spent": 900,
-  "outflow_budgeted": 3750,
-  "outflow_spent": 2400,
-  "planned_surplus": 1250,
-  "actual_surplus": 100,
-  "debt_share": 0.35,
-  "categories_over": 1
-}
-```
+Everything is computed from transactions, in `plan.go` and `suggest.go`. No model is needed for any figure.
+
+- **Paychecks** are income-category deposits whose payee matches `ACNTNG_PAYCHECK_MATCH`. Interest, dividends and refunds are other income, shown but not counted on.
+- **Normal** is each category's median over the baseline: the `ACNTNG_BASELINE_MONTHS` months before the review month. A median ignores the one month with a flight in it. Months before the account's history starts are dropped.
+- **Fixed** categories are debt service plus `ACNTNG_FIXED_CATEGORIES`. They are reported and never trimmed. Everything else is flexible.
+- **Left over** is paychecks less spending, for a normal month and for the review month.
+- Categories flagged "exclude from totals" or "exclude from budgets" are skipped, as are pending transactions and uncategorized credits.
+
+Suggestions come from rules, each with a saving measured against the review month:
+
+| Kind | When |
+| --- | --- |
+| `shortfall` | A normal month spends more than the paychecks. Listed first. |
+| `over_normal` | A flexible category ran 10% and $25 over its normal. Target: normal. |
+| `trim` | The three flexible categories with the most room above their 25th percentile month. Target: that month. |
+| `fees` | Anything in a category named for fees. Target: zero. |
+| `habit` | Four or more purchases at one merchant totalling $60. Not added to the total, since it sits inside a category. |
+| `subscriptions` | Charges landing once a month at a steady amount for three months. No saving is claimed. |
+| `uncategorized` | Over 5% of the month has no category. |
+
+`totals.potential_savings` sums the category suggestions; `totals.target_spend` sums the per-category targets.
+
+## AI advice
+
+Optional. With a Gemini key the plan's aggregates go to the model once, and it returns a short summary and up to five suggestions, shown above the rule-based ones. Spend is kept low by construction:
+
+- One request per review month, with thinking off, on `gemini-3.5-flash-lite`. No agent loop and no tool calls. A real month measured 3,274 tokens in and 1,077 out.
+- The answer is stored and reused. Only `POST /advice` (the Regenerate button) asks again.
+- At most `ACNTNG_AI_MAX_CALLS` requests per calendar month, failed ones included, so a broken model is not retried on every page view.
+- The prompt holds category totals, merchant names and the rule-based suggestions. No transactions, account names, or paycheck sources.
+
+With `DATABASE_URL` the advice and the call count live in the Postgres table `acntng_advice` and survive a restart. Without it they are held in memory, and a restart resets the budget.
 
 ## The budget report
 
@@ -79,22 +102,16 @@ Cadences normalize to monthly (`weekly` × 52/12, `every 2 weeks` × 26/12, `eve
 | --- | --- | --- |
 | `LUNCHMONEY_TOKEN`, `LUNCH_MONEY_KEY`, or `LUNCHMONEY_API_TOKEN` | yes | From [developers.lunchmoney.app](https://developers.lunchmoney.app/). |
 | `ACNTNG_SHARED_KEY` | in production | Secret Caddy injects as `X-Acntng-Key`. Required on report routes when set; the service refuses to start without it when `NAT_ENV=production`. |
+| `ACNTNG_PAYCHECK_MATCH` | no | Regular expression matched against an income payee. Defaults to common payroll descriptors (`payroll`, `gusto`, `adp`, `direct deposit`, ...). |
+| `ACNTNG_BASELINE_MONTHS` | no | Months that define normal, 1 to 24. Defaults to `6`. |
+| `ACNTNG_FIXED_CATEGORIES` | no | Comma-separated category names never trimmed, replacing the default list in `plan.go`. Debt categories are always fixed. |
+| `GEMINI_API_KEY`, or `GOOGLE_CLOUD_PROJECT` | no | Turns on AI advice through the Gemini API or Vertex AI. `GOOGLE_GEMINI_BASE_URL` points the former at a proxy. |
+| `ACNTNG_AI_MODEL` | no | Defaults to `gemini-3.5-flash-lite`. |
+| `ACNTNG_AI_MAX_CALLS` | no | Model calls allowed per calendar month. Defaults to `4`; `0` serves stored advice only. |
+| `DATABASE_URL` | no | Postgres DSN for stored advice. |
 | `ACNTNG_PAYMENT_OVERRIDES` | no | JSON mapping a loan ID to its monthly payment, e.g. `{"plaid:1001": 1500}`. |
 | `PORT` | no | Defaults to `8080`. |
 | `NAT_ENV` | no | `production` enables strict security headers and requires the shared key. |
-
-## CLI Mode
-
-`acntng` can run as a standalone CLI tool without running the server:
-
-```console
-$ task cli
-# or with flags
-$ go run . -cli -month 2026-09
-$ go run . -cli -json
-```
-
-Outputs a terminal-formatted summary of income, debt service, living expenses, revolving credit card utilization, and liquid cash vs net debt.
 
 ## Why a shared key as well as the portal
 
@@ -113,3 +130,5 @@ $ open http://localhost:8080/
 ```
 
 `task` runs build, vet and test. Run `task check` to verify formatting, vet, and race testing.
+
+The Postgres store test starts an embedded Postgres, downloading it on first run. `go test -short ./...` skips it, and `TEST_DATABASE_URL` points it at a database of your own.
