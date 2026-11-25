@@ -5,205 +5,100 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
-<title>acntng · plan for {{monthName .PlanFor}}</title>
+<title>acntng · {{monthName .PlanFor}}</title>
 {{template "style"}}
 </head>
 <body>
 <div class="wrap">
-
+{{$t := .Totals}}
   <header>
-    <h1>Plan for {{monthName .PlanFor}}</h1>
-    <p class="eyebrow">as of {{stamp .GeneratedAt}}</p>
+    <p class="eyebrow">Plan for</p>
+    <h1>{{monthName .PlanFor}}</h1>
   </header>
 
-  <nav class="months">
-    <a href="?month={{.PrevMonth}}" rel="prev">← {{monthName .PrevMonth}}</a>
-    <strong>Reviewing {{monthName .Month}}</strong>
-    <a href="?month={{.NextMonth}}" rel="next">{{monthName .NextMonth}} →</a>
-  </nav>
-
-  {{$t := .Totals}}
-  <div class="figs">
-    <div class="fig">
-      <b class="num">{{money $t.PaycheckNormal}}</b>
-      <span>paychecks in a normal month · {{money $t.PaycheckReview}} in {{monthName .Month}}</span>
+  <section class="verdict">
+    <p class="big">{{verdict .}}</p>
+    <p class="sub">{{basis .}}</p>
+    <div class="flow">
+      <div><span>Income</span><b class="num">{{dollars $t.Income}}</b></div>
+      <div><span>Bills</span><b class="num">{{dollars (neg $t.Bills)}}</b></div>
+      <div><span>Spending</span><b class="num">{{dollars (neg $t.Spending)}}</b></div>
+      <div><span>Left over now</span><b class="num {{if lt $t.Unchanged 0.0}}bad{{end}}">{{dollars $t.Unchanged}}</b></div>
+      <div class="to"><span>After changes</span><b class="num {{if gt $t.Short 0.0}}bad{{else}}good{{end}}">{{dollars $t.Planned}}</b></div>
+      <div><span>Target</span><b class="num">{{dollars $t.Target}}</b></div>
     </div>
-    <div class="fig">
-      <b class="num">{{money $t.SpendNormal}}</b>
-      <span>normal spend · {{money $t.FixedNormal}} fixed, {{money $t.FlexibleNormal}} flexible</span>
-    </div>
-    <div class="fig">
-      <b class="num {{if lt $t.MarginNormal 0.0}}bad{{else}}good{{end}}">{{money $t.MarginNormal}}</b>
-      <span>left over in a normal month{{with $t.SavingsRate}} · {{share .}} of paychecks{{end}}</span>
-    </div>
-    <div class="fig">
-      <b class="num {{if lt $t.MarginReview 0.0}}bad{{else}}good{{end}}">{{money $t.MarginReview}}</b>
-      <span>left over in {{monthName .Month}} · spent {{money $t.SpendReview}}</span>
-    </div>
-    <div class="fig">
-      <b class="num good">{{money $t.PotentialSavings}}</b>
-      <span>to save next month · target spend {{money $t.TargetSpend}}</span>
-    </div>
-  </div>
-
-  {{with .AdviceErr}}<div class="err">{{.}}</div>{{end}}
-
-  {{with .Advice}}
-  <section>
-    <h2>Advice</h2>
-    <p class="lede">{{.Summary}}</p>
-    <ul class="tips">
-      {{range .Suggestions}}
-      <li>
-        <div><strong>{{.Title}}</strong><p>{{.Action}} {{.Why}}</p></div>
-        {{with .MonthlySavings}}<b>{{money .}}/mo</b>{{end}}
-      </li>
-      {{end}}
-    </ul>
-    <form class="meta" method="post" action="advice?month={{$.Month}}">
-      <span>{{.Model}} · {{.TokensIn}} in / {{.TokensOut}} out tokens · {{stamp .GeneratedAt}}</span>
-      <button type="submit">Regenerate</button>
-    </form>
+    {{range .Notes}}<p class="note">{{.}}</p>{{end}}
   </section>
-  {{else}}{{if and .AIEnabled .Suggestions .BaselineMonths}}
-  <form class="meta" method="post" action="advice?month={{.Month}}">
-    <span>No AI advice for this month yet. Generating it is one model call.</span>
-    <button type="submit">Generate</button>
-  </form>
-  {{end}}{{end}}
 
+  {{if .Changes}}
   <section>
     <h2>What to change</h2>
-    {{if .Suggestions}}
-    <ul class="tips">
-      {{range .Suggestions}}
-      <li>
+    <ol class="changes">
+      {{range .Changes}}
+      <li class="{{.Kind}}">
         <div><strong>{{.Title}}</strong><p>{{.Detail}}</p></div>
-        {{with .MonthlySavings}}<b>{{money .}}/mo</b>{{end}}
+        <b class="num">+{{dollars .Saving}}</b>
       </li>
       {{end}}
-    </ul>
-    {{else}}
-    <p class="lede">Nothing stands out against a normal month.</p>
-    {{end}}
+      <li class="total"><div><strong>Together</strong></div><b class="num">+{{dollars $t.Savings}} a month</b></li>
+    </ol>
   </section>
+  {{end}}
 
   <section>
-    <h2>Spending against normal</h2>
+    <h2>{{monthName .PlanFor}} budget</h2>
     <div class="scroll">
       <table>
-        <thead>
-          <tr><th>Category</th><th>Normal</th><th>{{monthName .Month}}</th><th>vs normal</th><th>Target</th></tr>
-        </thead>
+        <thead><tr><th></th><th>Lately</th><th>Usual</th><th>Plan</th></tr></thead>
         <tbody>
-          {{if .Flexible}}<tr class="band"><td colspan="5">Flexible</td></tr>{{end}}
-          {{range .Flexible}}{{template "planline" .}}{{end}}
-          {{if .Flexible}}<tr class="sum">
-            <td>Flexible subtotal</td><td class="num">{{money $t.FlexibleNormal}}</td>
-            <td class="num">{{money $t.FlexibleReview}}</td>
-            <td class="num">{{signed (sub $t.FlexibleReview $t.FlexibleNormal)}}</td><td></td>
-          </tr>{{end}}
-          {{if .Fixed}}<tr class="band"><td colspan="5">Fixed</td></tr>{{end}}
-          {{range .Fixed}}{{template "planline" .}}{{end}}
-          {{if .Fixed}}<tr class="sum">
-            <td>Fixed subtotal</td><td class="num">{{money $t.FixedNormal}}</td>
-            <td class="num">{{money $t.FixedReview}}</td>
-            <td class="num">{{signed (sub $t.FixedReview $t.FixedNormal)}}</td><td></td>
-          </tr>{{end}}
-          <tr class="sum">
-            <td>Total</td><td class="num">{{money $t.SpendNormal}}</td>
-            <td class="num">{{money $t.SpendReview}}</td>
-            <td class="num">{{signed (sub $t.SpendReview $t.SpendNormal)}}</td>
-            <td class="num">{{money $t.TargetSpend}}</td>
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
-
-  {{if .Paychecks}}
-  <section>
-    <h2>Paychecks</h2>
-    <div class="scroll">
-      <table>
-        <thead>
-          <tr><th>Source</th><th>Typical deposit</th><th>Normal month</th><th>{{monthName .Month}}</th><th>Deposits</th></tr>
-        </thead>
-        <tbody>
-          {{range .Paychecks}}
+          <tr class="band"><td colspan="4">Income</td></tr>
+          {{range .Income}}<tr><td>{{.Name}}</td><td></td><td></td><td class="num">{{money .Monthly}}</td></tr>{{end}}
+          <tr class="band"><td colspan="4">Bills</td></tr>
+          {{range .Bills}}<tr><td>{{.Name}}<small>{{.Category}}</small></td><td class="num">{{money .Monthly}}</td><td></td><td class="num{{if lt .Plan .Monthly}} good{{end}}">{{money .Plan}}</td></tr>{{end}}
+          <tr class="band"><td colspan="4">Spending</td></tr>
+          {{range .Caps}}
           <tr>
-            <td>{{.Name}}</td><td class="num">{{money .Typical}}</td><td class="num">{{money .MonthlyNormal}}</td>
-            <td class="num">{{money .ReviewTotal}}</td><td class="num">{{.ReviewCount}}</td>
+            <td>{{.Category}}</td>
+            <td class="num">{{money .Lately}}</td>
+            <td class="num faint">{{money .Usual}}</td>
+            <td class="num{{if lt .Cap .Lately}} good{{end}}">{{money .Cap}}</td>
           </tr>
           {{end}}
-          <tr class="sum">
-            <td>Total</td><td></td><td class="num">{{money $t.PaycheckNormal}}</td>
-            <td class="num">{{money $t.PaycheckReview}}</td><td></td>
-          </tr>
+          <tr class="sum"><td>Left over</td><td></td><td></td><td class="num {{if gt $t.Short 0.0}}bad{{else}}good{{end}}">{{money $t.Planned}}</td></tr>
         </tbody>
       </table>
     </div>
-    {{if gt $t.OtherIncomeReview 0.0}}
-    <p class="eyebrow" style="margin-top:0.75rem">plus {{money $t.OtherIncomeReview}} of other income, not counted on</p>
+    <p class="note">Lately is the typical month from {{monthName (first .Lately)}} on. Usual is the typical month over all {{len .Months}} months of history. Bills are what each payee has charged lately; the occasional lines spread irregular costs over the year.</p>
+  </section>
+
+  {{if or .Stopped .OneOffs}}
+  <section>
+    <h2>Left out of the plan</h2>
+    {{if .Stopped}}
+    <details open>
+      <summary>No longer due · {{len .Stopped}}</summary>
+      <ul class="plain">
+        {{range .Stopped}}<li><span>{{.Name}} <small>{{.Reason}}</small></span><b class="num">{{money .Monthly}}/mo</b></li>{{end}}
+      </ul>
+    </details>
     {{end}}
-  </section>
-  {{end}}
-
-  {{if .Merchants}}
-  <section>
-    <h2>Where the flexible money went</h2>
-    <div class="scroll">
-      <table>
-        <thead><tr><th>Merchant</th><th>Category</th><th>Purchases</th><th>Total</th></tr></thead>
-        <tbody>
-          {{range .Merchants}}
-          <tr><td>{{.Name}}</td><td style="text-align:left;color:var(--faint)">{{.Category}}</td><td class="num">{{.Count}}</td><td class="num">{{money .Total}}</td></tr>
-          {{end}}
-        </tbody>
-      </table>
-    </div>
-  </section>
-  {{end}}
-
-  {{if .Recurring}}
-  <section>
-    <h2>Recurring charges</h2>
-    <div class="scroll">
-      <table>
-        <thead><tr><th>Merchant</th><th>Category</th><th>Months seen</th><th>Monthly</th></tr></thead>
-        <tbody>
-          {{range .Recurring}}
-          <tr><td>{{.Name}}</td><td style="text-align:left;color:var(--faint)">{{.Category}}</td><td class="num">{{.Months}}</td><td class="num">{{money .Monthly}}</td></tr>
-          {{end}}
-        </tbody>
-      </table>
-    </div>
-  </section>
-  {{end}}
-
-  {{if .Notes}}
-  <section>
-    <h2>Notes</h2>
-    <ul class="notes">{{range .Notes}}<li>{{.}}</li>{{end}}</ul>
+    {{if .OneOffs}}
+    <details>
+      <summary>One-offs from lately, not planned for again · {{len .OneOffs}}</summary>
+      <ul class="plain">
+        {{range .OneOffs}}<li><span>{{.Payee}} <small>{{shortDay .Date}} · {{.Category}} · {{.Reason}}</small></span><b class="num">{{money .Amount}}</b></li>{{end}}
+      </ul>
+    </details>
+    {{end}}
   </section>
   {{end}}
 
   <footer>
-    Normal is the median of {{len .BaselineMonths}} month{{if ne (len .BaselineMonths) 1}}s{{end}} before {{monthName .Month}}, read live from Lunch Money.
-    JSON at <a href="plan?month={{.Month}}">plan</a>. Budgets and debts are on the <a href="dashboard">dashboard</a>.
+    Read live from Lunch Money, {{monthName (first .Months)}} to now, at {{stamp .GeneratedAt}}.
+    <a href="plan">JSON</a> · <a href="dashboard">budgets and debts</a>
   </footer>
 
 </div>
 </body>
 </html>
-{{- end}}
-
-{{define "planline" -}}
-<tr>
-  <td>{{.Name}}</td>
-  <td class="num">{{money .Normal}}</td>
-  <td class="num">{{money .Review}}</td>
-  <td class="num{{if gt .Delta 0.0}} bad{{else if lt .Delta 0.0}} good{{end}}">{{signed .Delta}}</td>
-  <td class="num{{if and (not .Fixed) (lt .Target .Review)}} good{{end}}">{{money .Target}}</td>
-</tr>
 {{- end}}

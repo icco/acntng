@@ -4,7 +4,7 @@ Guidance for coding agents working on acntng.
 
 ## Project Overview
 
-Monthly frugality plan from Lunch Money paychecks and spending, as a web page, JSON API and CLI, written in Go (`go.icco.me/acntng`).
+Says what to change next month, from every paycheck and charge in Lunch Money, as a web page, JSON API and CLI, written in Go (`go.icco.me/acntng`).
 
 ## Commands (Taskfile)
 
@@ -20,11 +20,11 @@ Run via `task <name>`:
 ## Architecture & Layout
 
 - `main.go` — Server setup, environment, CLI flag dispatch, and HTTP routes.
-- `plan.go` — Paychecks, normal spend and the review month, from transactions.
-- `suggest.go` — Rule-based suggestions and per-category targets. Every figure comes from here, never from a model.
-- `advice.go` — The optional Gemini call, made through the LiteLLM proxy, and the `Coach` that caps and caches it.
-- `store.go` — Advice storage: Postgres via GORM, or memory.
-- `budget.go`, `loans.go` — The older budget and debt reports behind `/dashboard`.
+- `plan.go` — Reads the history, sorts it into paychecks and charges, and totals the plan.
+- `bills.go` — Bills, debts paid off or stopped, occasional costs and one-offs, payee by payee.
+- `changes.go` — Spending caps and the ranked changes. Every figure on the page comes from rules here.
+- `planview.go` — The plan's handlers, verdict and terminal output.
+- `budget.go`, `loans.go` — The budget and debt reports behind `/dashboard`.
 - `templates/` — HTML templates; `style.html` is shared.
 
 ## Conventions
@@ -32,6 +32,5 @@ Run via `task <name>`:
 - Follow icco Go conventions: `go.icco.me/gutil` for logging and helpers.
 - PR titles and commits must follow Conventional Commits with lowercase subjects.
 - Ensure `task lint` and `task test` pass before committing.
-- Keep model spend low: one request per explicit `POST /advice`, thinking off, reserved against `ACNTNG_AI_MAX_CALLS` before the call. GET routes never call the model.
-- The model picks and words rule-based suggestions by ID. Titles and dollar figures always come from `suggest.go`.
+- The plan page has no month picker: it always plans the month after today from all history.
 - Test fixtures use invented payees and amounts, never real Lunch Money data.

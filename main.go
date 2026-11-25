@@ -54,10 +54,9 @@ func getToken() string {
 
 func run() int {
 	cliFlag := flag.Bool("cli", false, "Run in CLI mode and print report directly to stdout")
-	monthFlag := flag.String("month", "", "Reporting month in YYYY-MM format (defaults to current month)")
+	monthFlag := flag.String("month", "", "With -debts, the budget month in YYYY-MM format (defaults to the current month)")
 	jsonFlag := flag.Bool("json", false, "Output report as JSON in CLI mode")
 	debtsFlag := flag.Bool("debts", false, "In CLI mode, print the budget and debt report instead of the plan")
-	aiFlag := flag.Bool("ai", false, "In CLI mode, include AI advice, generating it if none is stored")
 	flag.Parse()
 
 	log := logging.Must(logging.NewLogger(serverName))
@@ -107,25 +106,11 @@ func run() int {
 		return 1
 	}
 
-	// The rule-based CLI reports must work with the model or its database
-	// down, so advice is only set up for the modes that use it.
-	var coach *Coach
-	if !*cliFlag || (*aiFlag && !*debtsFlag) {
-		coach, err = coachFromEnv(ctx)
-		if err != nil {
-			log.Errorw("could not set up advice", zap.Error(err))
-			return 1
-		}
-		if coach == nil {
-			log.Infow("no GEMINI_API_KEY; suggestions are rule-based only")
-		}
-	}
-
 	if *cliFlag {
 		if *debtsFlag {
 			return runCLI(context.Background(), lm, overrides, *monthFlag, *jsonFlag)
 		}
-		return runPlanCLI(ctx, &Server{Log: log, Client: lm, PlanOptions: planOpts, Coach: coach}, *monthFlag, *jsonFlag)
+		return runPlanCLI(ctx, &Server{Log: log, Client: lm, PlanOptions: planOpts}, *jsonFlag)
 	}
 
 	// Siblings on mist's shared network reach this container directly, so fail
@@ -167,7 +152,6 @@ func run() int {
 			Client:      lm,
 			Overrides:   overrides,
 			PlanOptions: planOpts,
-			Coach:       coach,
 			SharedKey:   sharedKey,
 			Now:         time.Now,
 		}, promhttp.HandlerFor(registry, promhttp.HandlerOpts{})),
@@ -214,11 +198,8 @@ type Server struct {
 	Log       *zap.SugaredLogger
 	Client    Fetcher
 	Overrides map[string]float64
-	// PlanOptions carries the plan's configuration; Review and Now are set
-	// per request.
+	// PlanOptions carries the plan's configuration; Now is set per request.
 	PlanOptions PlanOptions
-	// Coach is nil when no model is configured.
-	Coach *Coach
 	// SharedKey, when set, is required on report requests.
 	SharedKey string
 	// Now is injectable so tests can pin the reporting month.
@@ -303,8 +284,6 @@ func router(s *Server, metrics http.Handler) http.Handler {
 		r.Use(requireSharedKey(s.SharedKey))
 		r.Get("/", s.handlePlanPage)
 		r.Get("/plan", s.handlePlan)
-		// A cross-site form post would otherwise spend a model call.
-		r.With(http.NewCrossOriginProtection().Handler).Post("/advice", s.handleAdviceRefresh)
 		r.Get("/dashboard", s.handleDashboard)
 		r.Get("/loans", s.handleLoans)
 		r.Get("/budget", s.handleBudget)
@@ -379,16 +358,33 @@ func optionsFromRequest(r *http.Request) (Options, error) {
 // planOptionsFromEnv reads the optional plan settings.
 func planOptionsFromEnv() (PlanOptions, error) {
 	opts := PlanOptions{
-		BaselineMonths: defaultBaselineMonths,
-		Fixed:          fixedSet(os.Getenv("ACNTNG_FIXED_CATEGORIES")),
+		HistoryMonths: defaultHistoryMonths,
+		SavingsTarget: defaultSavingsTarget,
+		Fixed:         fixedSet(os.Getenv("ACNTNG_FIXED_CATEGORIES")),
 	}
 
-	if raw := os.Getenv("ACNTNG_BASELINE_MONTHS"); raw != "" {
+	if raw := os.Getenv("ACNTNG_HISTORY_MONTHS"); raw != "" {
 		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > 24 {
-			return opts, fmt.Errorf("ACNTNG_BASELINE_MONTHS must be between 1 and 24, got %q", raw)
+		if err != nil || n < 1 || n > 36 {
+			return opts, fmt.Errorf("ACNTNG_HISTORY_MONTHS must be between 1 and 36, got %q", raw)
 		}
-		opts.BaselineMonths = n
+		opts.HistoryMonths = n
+	}
+
+	if raw := os.Getenv("ACNTNG_SAVINGS_TARGET"); raw != "" {
+		f, err := strconv.ParseFloat(raw, 64)
+		if err != nil || f < 0 {
+			return opts, fmt.Errorf("ACNTNG_SAVINGS_TARGET must be a non-negative number, got %q", raw)
+		}
+		opts.SavingsTarget = f
+	}
+
+	if raw := os.Getenv("ACNTNG_SINCE"); raw != "" {
+		t, err := time.Parse(monthKey, raw)
+		if err != nil {
+			return opts, fmt.Errorf("ACNTNG_SINCE must look like 2006-01, got %q", raw)
+		}
+		opts.Since = t
 	}
 
 	pattern := defaultPaycheckPattern
@@ -404,63 +400,11 @@ func planOptionsFromEnv() (PlanOptions, error) {
 	return opts, nil
 }
 
-// coachFromEnv builds the advice pipeline, or nil when no model is configured.
-func coachFromEnv(ctx context.Context) (*Coach, error) {
-	model := defaultAIModel
-	if raw := os.Getenv("GEMINI_MODEL"); raw != "" {
-		model = raw
-	}
-	adviser, err := NewGeminiAdviser(ctx, model)
-	if err != nil {
-		return nil, err
-	}
-	if adviser == nil {
-		return nil, nil
-	}
-
-	maxCalls := defaultAICallsPerMonth
-	if raw := os.Getenv("ACNTNG_AI_MAX_CALLS"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 0 {
-			return nil, fmt.Errorf("ACNTNG_AI_MAX_CALLS must be a non-negative integer, got %q", raw)
-		}
-		maxCalls = n
-	}
-
-	var store AdviceStore = &MemoryStore{}
-	if dsn := os.Getenv("DATABASE_URL"); dsn != "" {
-		pg, err := NewPostgresStore(dsn)
-		if err != nil {
-			return nil, err
-		}
-		store = pg
-	}
-
-	return &Coach{Adviser: adviser, Store: store, MaxCalls: maxCalls}, nil
-}
-
-func runPlanCLI(ctx context.Context, s *Server, monthStr string, asJSON bool) int {
-	now := time.Now()
-	review := lastCompleteMonth(now)
-	if monthStr != "" {
-		parsed, err := time.Parse(monthKey, monthStr)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: invalid month %q (expected YYYY-MM): %v\n", monthStr, err)
-			return 1
-		}
-		review = parsed
-	}
-
-	p, err, adviceErr := s.advisedPlan(ctx, review, now, false)
-	if err == nil && adviceErr == nil && p.Advice == nil && s.Coach != nil {
-		p, err, adviceErr = s.advisedPlan(ctx, review, now, true)
-	}
+func runPlanCLI(ctx context.Context, s *Server, asJSON bool) int {
+	p, err := s.plan(ctx, time.Now())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error building plan: %v\n", err)
 		return 1
-	}
-	if adviceErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: no advice: %v\n", adviceErr)
 	}
 
 	if asJSON {

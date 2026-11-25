@@ -16,7 +16,7 @@ RUN go build -ldflags="-s -w" -o /server .
 FROM alpine:3.24
 
 LABEL org.opencontainers.image.source=https://github.com/icco/acntng
-LABEL org.opencontainers.image.description="a monthly plan from paychecks and normal spending in lunch money"
+LABEL org.opencontainers.image.description="what to change next month, from every paycheck and charge in lunch money"
 LABEL org.opencontainers.image.licenses=MIT
 
 RUN apk upgrade --no-cache ca-certificates ca-certificates-bundle && apk add --no-cache ca-certificates tzdata

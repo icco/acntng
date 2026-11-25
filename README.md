@@ -2,7 +2,7 @@
 
 Why have vowels when you're in debt
 
-Reads paychecks and spending from [Lunch Money](https://lunchmoney.app), works out what a normal month costs, and says what to do differently next month to spend less. Runs on `mist` behind Caddy, which supplies the auth.
+Reads every paycheck and charge in [Lunch Money](https://lunchmoney.app) and says what to change next month to leave `ACNTNG_SAVINGS_TARGET` over. Runs on `mist` behind Caddy, which supplies the auth.
 
 ## Usage
 
@@ -10,58 +10,42 @@ Reads paychecks and spending from [Lunch Money](https://lunchmoney.app), works o
 $ export LUNCH_MONEY_KEY=...  # or in .env
 $ task run                    # http://localhost:8080/
 $ task cli                    # the same plan in the terminal
-$ task cli -- -month 2026-09 -json
-$ task cli -- -ai             # also ask the model
+$ task cli -- -json
 $ task cli -- -debts          # the budget and debt report
 ```
 
 | Path | |
 | --- | --- |
-| `GET /` | The plan. HTML. |
-| `GET /plan` | The plan. JSON. |
-| `POST /advice` | Spend one model call on advice for the month, then redirect to `/`. The only route that calls the model. |
+| `GET /` | Next month's plan. HTML. |
+| `GET /plan` | Next month's plan. JSON. |
 | `GET /dashboard` | Budget vs actual, and every debt. HTML. |
 | `GET /budget` | The month's budget. JSON. |
 | `GET /loans` | Loan balances and payments. JSON. |
 | `GET /healthz` | Liveness |
 | `GET /metrics` | Prometheus |
 
-`/`, `/plan` and `/advice` take `month=YYYY-MM`, the month to review, defaulting to the last complete month. `/dashboard` and `/budget` take the same param and default to the current month. `/loans` takes `include_credit` and `include_liabilities`, both default `false`.
+The plan always covers the month after today and takes no params. `/dashboard` and `/budget` take `month=YYYY-MM`, defaulting to the current month. `/loans` takes `include_credit` and `include_liabilities`, both default `false`.
 
 ## The plan
 
-Everything is computed from transactions, in `plan.go` and `suggest.go`. No model is needed for any figure.
+Every figure comes from rules in `plan.go`, `bills.go` and `changes.go`. It reads the last `ACNTNG_HISTORY_MONTHS` complete months plus the month so far.
 
-- **Paychecks** are income-category deposits whose payee matches `ACNTNG_PAYCHECK_MATCH`. Interest, dividends and refunds are other income, shown but not counted on.
-- **Normal** is each category's median over the baseline: the `ACNTNG_BASELINE_MONTHS` months before the review month. A median ignores the one month with a flight in it. Months before the account's history starts are dropped.
-- **Fixed** categories are debt service plus `ACNTNG_FIXED_CATEGORIES`. They are reported and never trimmed. Everything else is flexible.
-- **Left over** is paychecks less spending, for a normal month and for the review month.
-- Categories flagged "exclude from totals" or "exclude from budgets" are skipped, as are pending transactions and uncategorized credits.
+- **Usual** is a category's median month over the whole history. **Lately** is its median month from `ACNTNG_SINCE` on, or over the last three months without it. The month in progress counts from the 15th, scaled up to a full month.
+- **Income** is each paycheck source's typical month lately. Paychecks are income deposits whose payee matches `ACNTNG_PAYCHECK_MATCH`; other income is not counted on. A source that has stopped paying drops out.
+- **Bills** come from debt categories and `ACNTNG_FIXED_CATEGORIES`, payee by payee. A payee that charged in two of the last three months is a bill at its typical recent month. One that has gone quiet for 45 days, or whose loan balance is zero, is listed as no longer due. A payee seen in at most two months is occasional, and each category's occasional costs are spread over the year.
+- **One-offs** are left out of lately and listed: a charge over $500 from a payee that never charges within 25% of it again, and a debt payment over $5,000 and three times the payee's others.
+- **Spending** is every other category at its lately figure. Fees and interest are one line.
 
-Suggestions come from rules, each with a saving measured against the review month:
+Changes are listed biggest saving first, each lowering a category's cap:
 
 | Kind | When |
 | --- | --- |
-| `shortfall` | A normal month spends more than the paychecks. Listed first. |
-| `over_normal` | A flexible category ran 10% and $25 over its normal. Target: normal. |
-| `trim` | The three flexible categories with the most room above their 25th percentile month. Target: that month. |
-| `fees` | Anything in a category with the word fee or fees in its name. Target: zero. |
-| `habit` | Four or more purchases at one merchant totalling $60. Not added to the total, since it sits inside a category. |
-| `subscriptions` | Charges landing once a month at a steady amount for three months running. No saving is claimed. |
-| `uncategorized` | Over 5% of the month has no category. |
+| `fee` | Interest, foreign transaction, overdraft and returned-payment, service, or other fees charged lately. Saving: all of it. |
+| `old_bill` | A home, utility, phone or insurance bill that began before `ACNTNG_SINCE` and still charges. Needs `ACNTNG_SINCE`. |
+| `creep` | A category lately at least 10% and $50 over its usual. Target: usual. Names the payees behind it. |
+| `cut` | Only while the target is still out of reach: categories with the most room above their leanest quarter of months, held there. A cut to a category that already crept is folded into that change. |
 
-`totals.potential_savings` sums the category suggestions; `totals.target_spend` sums the per-category targets. With no month of history before the review month there is no normal, so each target is the month's own spending and only `habit` and `uncategorized` apply.
-
-## AI advice
-
-Optional, and always through the [LiteLLM](https://docs.litellm.ai/) proxy, which attributes spend to this service's own virtual key. With a key set, the Generate button sends the plan's aggregates to the model, which picks up to five of the rule-based suggestions and writes a specific action for each. Titles and savings stay the rules' own, so no dollar figure on the page is a model's guess. Spend is kept low by construction:
-
-- Viewing never calls the model. `GET /` and `GET /plan` read stored advice; only `POST /advice` (the Generate and Regenerate buttons) and `-cli -ai` generate.
-- One request each time, with thinking off, on `gemini-3.5-flash-lite`. No agent loop and no tool calls. A real month measured 3,320 tokens in and 670 out.
-- At most `ACNTNG_AI_MAX_CALLS` requests per calendar month. Each is recorded before the model is called, so failures and dropped connections still count.
-- The prompt holds category totals, merchant names and the rule-based suggestions. No transactions, account names, or paycheck sources.
-
-With `DATABASE_URL` the advice and the call count live in the Postgres table `acntng_advice` and survive a restart. Without it they are held in memory, and a restart resets the budget.
+When every change still falls short, the plan says so and how much of the pay the bills take.
 
 ## The budget report
 
@@ -103,13 +87,10 @@ Cadences normalize to monthly (`weekly` × 52/12, `every 2 weeks` × 26/12, `eve
 | `LUNCHMONEY_TOKEN`, `LUNCH_MONEY_KEY`, or `LUNCHMONEY_API_TOKEN` | yes | From [developers.lunchmoney.app](https://developers.lunchmoney.app/). |
 | `ACNTNG_SHARED_KEY` | in production | Secret Caddy injects as `X-Acntng-Key`. Required on report routes when set; the service refuses to start without it when `NAT_ENV=production`. |
 | `ACNTNG_PAYCHECK_MATCH` | no | Regular expression matched against an income payee. Defaults to common payroll descriptors (`payroll`, `gusto`, `adp`, `direct deposit`, ...). |
-| `ACNTNG_BASELINE_MONTHS` | no | Months that define normal, 1 to 24. Defaults to `6`. |
-| `ACNTNG_FIXED_CATEGORIES` | no | Comma-separated category names never trimmed, replacing the default list in `plan.go`. Debt categories are always fixed. |
-| `GEMINI_API_KEY` | no | This service's LiteLLM virtual key. Turns on AI advice. |
-| `GOOGLE_GEMINI_BASE_URL` | with the key | The LiteLLM proxy, e.g. `http://litellm:4000`. The service refuses to start with a key and no proxy, so the key is never sent to Google directly. |
-| `GEMINI_MODEL` | no | Model name as LiteLLM routes it. Defaults to `gemini-3.5-flash-lite`. |
-| `ACNTNG_AI_MAX_CALLS` | no | Model calls allowed per calendar month. Defaults to `4`; `0` serves stored advice only. |
-| `DATABASE_URL` | no | Postgres DSN for stored advice. |
+| `ACNTNG_SAVINGS_TARGET` | no | What next month should leave over, in the base currency. Defaults to `1000`. |
+| `ACNTNG_SINCE` | no | `YYYY-MM` your current way of living began, such as a move. Lately is judged from it, and bills from before it are flagged. |
+| `ACNTNG_HISTORY_MONTHS` | no | Complete months read, 1 to 36. Defaults to `12`. |
+| `ACNTNG_FIXED_CATEGORIES` | no | Comma-separated categories read as bills rather than spending, replacing the default list in `plan.go`. Debt categories always are. |
 | `ACNTNG_PAYMENT_OVERRIDES` | no | JSON mapping a loan ID to its monthly payment, e.g. `{"plaid:1001": 1500}`. |
 | `PORT` | no | Defaults to `8080`. |
 | `NAT_ENV` | no | `production` enables strict security headers and requires the shared key. |
@@ -131,5 +112,3 @@ $ open http://localhost:8080/
 ```
 
 `task` runs build, vet and test. Run `task check` to verify formatting, vet, and race testing.
-
-The Postgres store test starts an embedded Postgres, downloading it on first run. `go test -short ./...` skips it, and `TEST_DATABASE_URL` points it at a database of your own.
