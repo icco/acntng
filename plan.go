@@ -12,16 +12,38 @@ import (
 )
 
 const (
-	defaultBaselineMonths = 6
-	monthKey              = "2006-01"
-	dayKey                = "2006-01-02"
-	transactionPageSize   = 2000
-	uncategorizedName     = "Uncategorized"
-	// maxMerchants caps the merchant table, which is context for a human and
-	// prompt tokens for the model.
-	maxMerchants = 12
-	// minRecurringMonths is how many months in a row make a charge recurring.
-	minRecurringMonths = 3
+	defaultHistoryMonths = 12
+	defaultSavingsTarget = 1000.0
+	// latelyFallbackMonths is how many complete months count as lately when
+	// no ACNTNG_SINCE is set.
+	latelyFallbackMonths = 3
+	monthKey             = "2006-01"
+	dayKey               = "2006-01-02"
+	transactionPageSize  = 2000
+	uncategorizedName    = "Uncategorized"
+	feesName             = "Fees and interest"
+
+	// spikeRatio marks a charge this many times a payee's usual one as a
+	// payoff or a deposit rather than the bill itself.
+	spikeRatio = 3.0
+	// billLookbackDays is how far back a bill must have charged to be due.
+	billLookbackDays = 92
+	// stoppedAfterDays is how long a bill can go quiet before it is treated
+	// as stopped.
+	stoppedAfterDays = 45
+	// recurringMinMonths is how many separate months a payee must appear in
+	// to be a bill rather than an occasional cost.
+	recurringMinMonths = 2
+	// occasionalMaxMonths is the most months an occasional payee appears in
+	// across the whole history.
+	occasionalMaxMonths = 2
+	oneOffMin           = 500.0
+	// payoffMin is the smallest debt payment read as a payoff.
+	payoffMin  = 5000.0
+	maxOneOffs = 12
+	// partialMonthMinDay is the day from which the month in progress counts
+	// toward lately, scaled up to a full month.
+	partialMonthMinDay = 15
 )
 
 // defaultPaycheckPattern matches the payroll processors and bank descriptors a
@@ -36,140 +58,113 @@ var defaultFixedCategories = []string{
 
 // PlanOptions shapes a plan.
 type PlanOptions struct {
-	// Review is any instant inside the month being reviewed.
-	Review time.Time
-	// Now decides which month the plan is for.
+	// Now decides the month planned for, which is always the next one.
 	Now time.Time
-	// BaselineMonths is how many months before the review month define normal.
-	BaselineMonths int
+	// HistoryMonths is how many complete months of history are read.
+	HistoryMonths int
+	// Since is the first month of the current way of living. Bills and
+	// recent spending are judged from it. Zero means the last three months.
+	Since time.Time
+	// SavingsTarget is what the plan aims to leave over each month.
+	SavingsTarget float64
 	// PaycheckMatch picks paychecks out of income by payee.
 	PaycheckMatch *regexp.Regexp
-	// Fixed holds lowercased category names that are not worth trimming.
+	// Fixed holds lowercased category names that are bills, not choices.
 	Fixed map[string]bool
 }
 
-// PaycheckSource is one employer's deposits.
-type PaycheckSource struct {
-	Name string `json:"name"`
-	// Typical is the median single deposit across the whole window.
-	Typical float64 `json:"typical"`
-	// MonthlyNormal is the median monthly total across the baseline.
-	MonthlyNormal float64 `json:"monthly_normal"`
-	ReviewCount   int     `json:"review_count"`
-	ReviewTotal   float64 `json:"review_total"`
+// IncomeLine is one employer's expected pay next month.
+type IncomeLine struct {
+	Name    string  `json:"name"`
+	Monthly float64 `json:"monthly"`
 }
 
-// CategoryLine compares one category's review month against its normal.
-type CategoryLine struct {
-	CategoryID int64  `json:"category_id"`
-	Name       string `json:"name"`
-	Fixed      bool   `json:"fixed"`
-	// Normal is the median month across the baseline, Low the 25th percentile.
-	Normal float64 `json:"normal"`
-	Low    float64 `json:"low"`
-	Review float64 `json:"review"`
-	Delta  float64 `json:"delta"`
-	// Target is what the plan asks of this category next month.
-	Target       float64   `json:"target"`
-	History      []float64 `json:"history"`
-	Transactions int       `json:"transactions"`
-}
-
-// MerchantLine is one payee's flexible spending in the review month.
-type MerchantLine struct {
-	Name     string  `json:"name"`
-	Category string  `json:"category"`
-	Count    int     `json:"count"`
-	Total    float64 `json:"total"`
-}
-
-// RecurringCharge is a flexible charge that lands once a month at a steady
-// amount, found from the transactions themselves. Months counts the unbroken
-// run ending in the review month.
-type RecurringCharge struct {
+// BillLine is a cost next month that is owed rather than chosen.
+type BillLine struct {
 	Name     string  `json:"name"`
 	Category string  `json:"category"`
 	Monthly  float64 `json:"monthly"`
-	Months   int     `json:"months"`
+	Debt     bool    `json:"debt"`
+	// FirstSeen is the first month the payee charged in the history read.
+	FirstSeen string `json:"first_seen"`
+	// Occasional marks a category's irregular costs, budgeted at their usual
+	// month rather than tied to one payee.
+	Occasional bool `json:"occasional,omitempty"`
 }
 
-// PlanTotals are the headline figures. Fixed and flexible partition spend.
+// StoppedBill is a bill that charged recently and is no longer due.
+type StoppedBill struct {
+	Name     string  `json:"name"`
+	Category string  `json:"category"`
+	Monthly  float64 `json:"monthly"`
+	Reason   string  `json:"reason"`
+}
+
+// CapLine is one category of chosen spending: what it usually costs, what it
+// has cost lately, and what the plan allows next month.
+type CapLine struct {
+	Category string  `json:"category"`
+	Usual    float64 `json:"usual"`
+	Lately   float64 `json:"lately"`
+	Cap      float64 `json:"cap"`
+	// Low is the 25th percentile month, the floor a cut aims for.
+	Low float64 `json:"low"`
+}
+
+// OneOff is a large charge read but not planned for again.
+type OneOff struct {
+	Date     string  `json:"date"`
+	Payee    string  `json:"payee"`
+	Category string  `json:"category"`
+	Amount   float64 `json:"amount"`
+	Reason   string  `json:"reason"`
+}
+
+// PlanTotals are the headline figures for the month planned.
 type PlanTotals struct {
-	PaycheckNormal    float64 `json:"paycheck_normal"`
-	PaycheckReview    float64 `json:"paycheck_review"`
-	OtherIncomeNormal float64 `json:"other_income_normal"`
-	OtherIncomeReview float64 `json:"other_income_review"`
-	SpendNormal       float64 `json:"spend_normal"`
-	SpendReview       float64 `json:"spend_review"`
-	FixedNormal       float64 `json:"fixed_normal"`
-	FixedReview       float64 `json:"fixed_review"`
-	FlexibleNormal    float64 `json:"flexible_normal"`
-	FlexibleReview    float64 `json:"flexible_review"`
-	// MarginNormal is paychecks less spending in a normal month. Other income
-	// is left out: a plan should not lean on money that may not arrive.
-	MarginNormal float64 `json:"margin_normal"`
-	MarginReview float64 `json:"margin_review"`
-	// SavingsRate is MarginNormal over PaycheckNormal, nil without paychecks.
-	SavingsRate      *float64 `json:"savings_rate"`
-	TargetSpend      float64  `json:"target_spend"`
-	TargetMargin     float64  `json:"target_margin"`
-	PotentialSavings float64  `json:"potential_savings"`
+	Income   float64 `json:"income"`
+	Bills    float64 `json:"bills"`
+	Spending float64 `json:"spending"`
+	// Unchanged is what the month leaves if nothing changes.
+	Unchanged float64 `json:"unchanged"`
+	Savings   float64 `json:"savings"`
+	// Planned is what the month leaves with every change made.
+	Planned float64 `json:"planned"`
+	Target  float64 `json:"target"`
+	// Short is how far Planned falls below Target, zero when it does not.
+	Short float64 `json:"short"`
 }
 
-// Plan is the top-level response: what a normal month looks like against the
-// paychecks, how the review month differed, and what to change next month.
+// Plan says what to change next month, from every month of history read.
 type Plan struct {
-	GeneratedAt    time.Time         `json:"generated_at"`
-	Month          string            `json:"month"`
-	PlanFor        string            `json:"plan_for"`
-	BaselineMonths []string          `json:"baseline_months"`
-	Totals         PlanTotals        `json:"totals"`
-	Paychecks      []PaycheckSource  `json:"paychecks"`
-	Categories     []CategoryLine    `json:"categories"`
-	Merchants      []MerchantLine    `json:"merchants"`
-	Recurring      []RecurringCharge `json:"recurring"`
-	Suggestions    []Suggestion      `json:"suggestions"`
-	Advice         *Advice           `json:"advice,omitempty"`
-	Notes          []string          `json:"notes,omitempty"`
+	GeneratedAt time.Time `json:"generated_at"`
+	PlanFor     string    `json:"plan_for"`
+	// Months is the complete history read; Lately the months that describe
+	// how things are now.
+	Months  []string      `json:"months"`
+	Lately  []string      `json:"lately"`
+	Totals  PlanTotals    `json:"totals"`
+	Changes []Change      `json:"changes"`
+	Income  []IncomeLine  `json:"income"`
+	Bills   []BillLine    `json:"bills"`
+	Caps    []CapLine     `json:"caps"`
+	Stopped []StoppedBill `json:"stopped"`
+	OneOffs []OneOff      `json:"one_offs"`
+	Notes   []string      `json:"notes,omitempty"`
 }
 
-// PrevMonth returns the review month before this one.
-func (p *Plan) PrevMonth() string { return shiftMonth(p.Month, -1) }
-
-// NextMonth returns the review month after this one.
-func (p *Plan) NextMonth() string { return shiftMonth(p.Month, 1) }
-
-func shiftMonth(month string, by int) string {
-	t, err := time.Parse(monthKey, month)
-	if err != nil {
-		return ""
-	}
-	return t.AddDate(0, by, 0).Format(monthKey)
-}
-
-// TransactionFetcher is the slice of the Lunch Money client the plan needs.
+// TransactionFetcher is the slice of the Lunch Money client the plan reads
+// transactions through.
 type TransactionFetcher interface {
 	GetTransactions(ctx context.Context, filters *lunchmoney.TransactionFilters) (*lunchmoney.TransactionsResponse, error)
 	GetCategories(ctx context.Context, filters *lunchmoney.CategoryFilters) ([]*lunchmoney.Category, error)
 }
 
-// lastCompleteMonth is the default review month.
-func lastCompleteMonth(now time.Time) time.Time {
-	return monthStart(now).AddDate(0, -1, 0)
-}
-
-// planFor picks the month the advice applies to: the one after the review
-// month, moved forward when that month is already past or mostly spent.
-func planFor(review, now time.Time) time.Time {
-	next := monthStart(review).AddDate(0, 1, 0)
-	current := monthStart(now)
-	if next.Before(current) {
-		next = current
-	}
-	if next.Equal(current) && now.Day() > 15 {
-		next = current.AddDate(0, 1, 0)
-	}
-	return next
+// PlanFetcher is everything the plan reads: transactions, and the loan
+// balances that say whether a debt is paid off.
+type PlanFetcher interface {
+	TransactionFetcher
+	LoanFetcher
 }
 
 // fixedSet builds the fixed-category lookup from a comma-separated override,
@@ -188,52 +183,32 @@ func fixedSet(override string) map[string]bool {
 	return out
 }
 
-type merchantMonth struct {
-	total float64
-	count int
-}
-
-type merchantAgg struct {
-	name     string
+// charge is one spending transaction, reduced to what the plan uses.
+type charge struct {
+	date     time.Time
+	month    string
+	payee    string
+	key      string
 	category string
-	months   map[string]*merchantMonth
+	amount   float64
+	fixed    bool
+	debt     bool
+	fee      string
+	// oneOff marks a large purchase that is not planned for again.
+	oneOff bool
 }
 
-type sourceAgg struct {
-	name     string
-	deposits []float64
-	months   map[string]*merchantMonth
+// deposit is one paycheck.
+type deposit struct {
+	month  string
+	source string
+	amount float64
 }
 
-// ledger is the window's transactions rolled up by month.
-type ledger struct {
-	spend     map[int64]map[string]float64
-	counts    map[int64]map[string]int
-	paycheck  map[string]float64
-	other     map[string]float64
-	active    map[string]bool
-	merchants map[string]*merchantAgg
-	sources   map[string]*sourceAgg
-
-	skippedCredits int
-}
-
-func newLedger() *ledger {
-	return &ledger{
-		spend:     map[int64]map[string]float64{},
-		counts:    map[int64]map[string]int{},
-		paycheck:  map[string]float64{},
-		other:     map[string]float64{},
-		active:    map[string]bool{},
-		merchants: map[string]*merchantAgg{},
-		sources:   map[string]*sourceAgg{},
-	}
-}
-
-// BuildPlan assembles the plan for the month containing opts.Review.
-func BuildPlan(ctx context.Context, c TransactionFetcher, opts PlanOptions) (*Plan, error) {
-	if opts.BaselineMonths <= 0 {
-		opts.BaselineMonths = defaultBaselineMonths
+// BuildPlan reads the history and plans the month after opts.Now.
+func BuildPlan(ctx context.Context, c PlanFetcher, opts PlanOptions) (*Plan, error) {
+	if opts.HistoryMonths <= 0 {
+		opts.HistoryMonths = defaultHistoryMonths
 	}
 	if opts.PaycheckMatch == nil {
 		opts.PaycheckMatch = regexp.MustCompile(defaultPaycheckPattern)
@@ -242,13 +217,11 @@ func BuildPlan(ctx context.Context, c TransactionFetcher, opts PlanOptions) (*Pl
 		opts.Fixed = fixedSet("")
 	}
 
-	review := monthStart(opts.Review)
-	start := review.AddDate(0, -opts.BaselineMonths, 0)
-	end := review.AddDate(0, 1, -1)
+	now := opts.Now
+	current := monthStart(now)
+	start := current.AddDate(0, -opts.HistoryMonths, 0)
 
-	categories, err := c.GetCategories(ctx, &lunchmoney.CategoryFilters{
-		Format: lunchmoney.CategoryFormatFlattened,
-	})
+	categories, err := c.GetCategories(ctx, &lunchmoney.CategoryFilters{Format: lunchmoney.CategoryFormatFlattened})
 	if err != nil {
 		return nil, fmt.Errorf("get categories: %w", err)
 	}
@@ -259,90 +232,155 @@ func BuildPlan(ctx context.Context, c TransactionFetcher, opts PlanOptions) (*Pl
 		}
 	}
 
-	txs, err := fetchTransactions(ctx, c, start, end)
+	txs, err := fetchTransactions(ctx, c, start, now)
 	if err != nil {
 		return nil, err
 	}
 
-	isFixed := func(name string) bool {
-		return isDebt(name) || opts.Fixed[strings.ToLower(strings.TrimSpace(name))]
+	p := &Plan{
+		GeneratedAt: now.UTC(),
+		PlanFor:     current.AddDate(0, 1, 0).Format(monthKey),
+		Months:      []string{},
+		Lately:      []string{},
+		Changes:     []Change{},
+		Income:      []IncomeLine{},
+		Bills:       []BillLine{},
+		Caps:        []CapLine{},
+		Stopped:     []StoppedBill{},
+		OneOffs:     []OneOff{},
 	}
+	p.Totals.Target = opts.SavingsTarget
 
-	l := newLedger()
-	for _, tx := range txs {
-		l.add(tx, byID, opts.PaycheckMatch, isFixed)
+	charges, deposits, skipped := classify(txs, byID, opts)
+
+	active := map[string]bool{}
+	for _, ch := range charges {
+		active[ch.month] = true
 	}
-
-	reviewKey := review.Format(monthKey)
-	var baseline []string
-	for m := start; m.Before(review); m = m.AddDate(0, 1, 0) {
+	for _, d := range deposits {
+		active[d.month] = true
+	}
+	for m := start; m.Before(current); m = m.AddDate(0, 1, 0) {
 		key := m.Format(monthKey)
-		// Months before the account's history begins would drag every median
-		// toward zero, so the baseline starts at the first month with data.
-		if len(baseline) == 0 && !l.active[key] {
+		// Months before the history begins would drag every median to zero.
+		if len(p.Months) == 0 && !active[key] {
 			continue
 		}
-		baseline = append(baseline, key)
+		p.Months = append(p.Months, key)
+	}
+	if len(p.Months) == 0 {
+		p.Notes = append(p.Notes, "there is no complete month of transactions yet, so there is nothing to plan from")
+		return p, nil
 	}
 
-	p := &Plan{
-		GeneratedAt:    opts.Now.UTC(),
-		Month:          reviewKey,
-		PlanFor:        planFor(review, opts.Now).Format(monthKey),
-		BaselineMonths: baseline,
-		Paychecks:      []PaycheckSource{},
-		Categories:     []CategoryLine{},
-		Merchants:      []MerchantLine{},
-		Recurring:      []RecurringCharge{},
-		Suggestions:    []Suggestion{},
-	}
-	if baseline == nil {
-		p.BaselineMonths = []string{}
+	scale := latelyMonths(p, opts, now)
+
+	var loans []Loan
+	if rep, err := BuildReport(ctx, c, now, Options{IncludeCredit: true}); err != nil {
+		p.Notes = append(p.Notes, "loan balances could not be read, so a debt paid off in a lump is still budgeted")
+	} else {
+		loans = rep.Loans
 	}
 
-	p.Categories = l.categoryLines(byID, baseline, reviewKey, isFixed)
-	p.Paychecks = l.paycheckSources(baseline, reviewKey)
-	p.Merchants = l.reviewMerchants(reviewKey)
-	p.Recurring = l.recurringCharges(baseline, reviewKey)
+	p.Income = income(deposits, p.Lately, scale)
+	b := bills(charges, now, p.Months, loans)
+	p.Bills, p.Stopped, p.OneOffs = b.lines, b.stopped, b.oneOffs
+	p.OneOffs = append(p.OneOffs, markOneOffs(charges, scale)...)
+	sortOneOffs(p.OneOffs)
+	if len(p.OneOffs) > maxOneOffs {
+		p.OneOffs = p.OneOffs[:maxOneOffs]
+	}
+	p.Caps = caps(charges, p.Months, p.Lately, scale)
 
 	t := &p.Totals
-	t.PaycheckNormal = round2(median(series(l.paycheck, baseline)))
-	t.PaycheckReview = round2(l.paycheck[reviewKey])
-	t.OtherIncomeNormal = round2(median(series(l.other, baseline)))
-	t.OtherIncomeReview = round2(l.other[reviewKey])
-
-	suggest(p)
-
-	for _, line := range p.Categories {
-		t.SpendNormal += line.Normal
-		t.SpendReview += line.Review
-		t.TargetSpend += line.Target
-		if line.Fixed {
-			t.FixedNormal += line.Normal
-			t.FixedReview += line.Review
-		} else {
-			t.FlexibleNormal += line.Normal
-			t.FlexibleReview += line.Review
-		}
+	for _, l := range p.Income {
+		t.Income += l.Monthly
 	}
-	for _, f := range []*float64{
-		&t.SpendNormal, &t.SpendReview, &t.TargetSpend,
-		&t.FixedNormal, &t.FixedReview, &t.FlexibleNormal, &t.FlexibleReview,
-	} {
-		*f = round2(*f)
+	for _, l := range p.Bills {
+		t.Bills += l.Monthly
 	}
-	t.MarginNormal = round2(t.PaycheckNormal - t.SpendNormal)
-	t.MarginReview = round2(t.PaycheckReview - t.SpendReview)
-	t.TargetMargin = round2(t.PaycheckNormal - t.TargetSpend)
-	if t.PaycheckNormal > 0 {
-		rate := round2(t.MarginNormal / t.PaycheckNormal)
-		t.SavingsRate = &rate
+	for _, l := range p.Caps {
+		t.Spending += l.Lately
 	}
+	t.Income, t.Bills, t.Spending = round2(t.Income), round2(t.Bills), round2(t.Spending)
+	t.Unchanged = round2(t.Income - t.Bills - t.Spending)
 
-	headline(p)
-	p.notes(l, opts.BaselineMonths)
+	p.Changes = changes(p, charges, scale, b, opts)
+	for _, ch := range p.Changes {
+		t.Savings += ch.Saving
+	}
+	t.Savings = round2(t.Savings)
+	t.Planned = round2(t.Unchanged + t.Savings)
+	t.Short = round2(max(t.Target-t.Planned, 0))
 
+	p.notes(charges, scale, skipped)
 	return p, nil
+}
+
+// classify splits transactions into spending charges and paychecks. Pending
+// rows, split parents, grouped children and transfers are dropped.
+func classify(txs []*lunchmoney.Transaction, byID map[int64]*lunchmoney.Category, opts PlanOptions) ([]charge, []deposit, int) {
+	var charges []charge
+	var deposits []deposit
+	skipped := 0
+	for _, tx := range txs {
+		if tx == nil || tx.IsPending || tx.IsSplitParent || tx.GroupParentID != nil || len(tx.Date) < 10 {
+			continue
+		}
+		date, err := time.Parse(dayKey, tx.Date[:10])
+		if err != nil {
+			continue
+		}
+		var cat *lunchmoney.Category
+		if tx.CategoryID != nil {
+			cat = byID[*tx.CategoryID]
+		}
+		// Transfers and card payments settle spending counted elsewhere.
+		if cat != nil && (cat.ExcludeFromTotals || cat.ExcludeFromBudget) {
+			continue
+		}
+		month := tx.Date[:7]
+
+		if cat != nil && cat.IsIncome {
+			amount := -tx.ToBase
+			if amount > 0 && (opts.PaycheckMatch.MatchString(tx.Payee) || opts.PaycheckMatch.MatchString(tx.OriginalName)) {
+				deposits = append(deposits, deposit{month: month, source: sourceName(tx.Payee), amount: amount})
+			}
+			continue
+		}
+
+		name := uncategorizedName
+		if cat != nil {
+			name = cat.Name
+		} else if tx.ToBase < 0 {
+			// An uncategorized credit is as likely a transfer as a refund.
+			skipped++
+			continue
+		}
+
+		payee := strings.TrimSpace(tx.Payee)
+		if payee == "" {
+			payee = strings.TrimSpace(tx.OriginalName)
+		}
+		ch := charge{
+			date:     date,
+			month:    month,
+			payee:    payee,
+			key:      payeeKey(payee),
+			category: name,
+			amount:   tx.ToBase,
+			debt:     isDebt(name),
+		}
+		ch.fixed = ch.debt || opts.Fixed[strings.ToLower(strings.TrimSpace(name))]
+		if !ch.debt {
+			ch.fee = feeKind(payee+" "+tx.OriginalName, name)
+		}
+		if ch.fee != "" {
+			ch.fixed = false
+		}
+		charges = append(charges, ch)
+	}
+	return charges, deposits, skipped
 }
 
 // fetchTransactions pages through every transaction in the window.
@@ -368,84 +406,67 @@ func fetchTransactions(ctx context.Context, c TransactionFetcher, start, end tim
 	}
 }
 
-func (l *ledger) add(tx *lunchmoney.Transaction, byID map[int64]*lunchmoney.Category, paycheck *regexp.Regexp, isFixed func(string) bool) {
-	if tx == nil || tx.IsPending || tx.IsSplitParent || tx.GroupParentID != nil || len(tx.Date) < 7 {
-		return
-	}
-	month := tx.Date[:7]
-
-	var cat *lunchmoney.Category
-	if tx.CategoryID != nil {
-		cat = byID[*tx.CategoryID]
-	}
-	// Transfers and card payments settle spending already counted elsewhere.
-	if cat != nil && (cat.ExcludeFromTotals || cat.ExcludeFromBudget) {
-		return
-	}
-
-	if cat != nil && cat.IsIncome {
-		l.active[month] = true
-		amount := -tx.ToBase
-		if amount > 0 && (paycheck.MatchString(tx.Payee) || paycheck.MatchString(tx.OriginalName)) {
-			l.paycheck[month] += amount
-			l.addSource(tx.Payee, month, amount)
-			return
+// latelyMonths picks the months that describe how things are now and returns
+// the factor each is scaled by: one for a complete month, more for the month
+// in progress.
+func latelyMonths(p *Plan, opts PlanOptions, now time.Time) map[string]float64 {
+	scale := map[string]float64{}
+	if !opts.Since.IsZero() {
+		since := monthStart(opts.Since).Format(monthKey)
+		for _, m := range p.Months {
+			if m >= since {
+				p.Lately = append(p.Lately, m)
+			}
 		}
-		l.other[month] += amount
-		return
 	}
-
-	var id int64
-	name := uncategorizedName
-	if cat != nil {
-		id, name = cat.ID, cat.Name
-	} else if tx.ToBase < 0 {
-		// An uncategorized credit is as likely a transfer as a refund.
-		l.skippedCredits++
-		return
+	if len(p.Lately) == 0 {
+		p.Lately = append(p.Lately, p.Months[max(len(p.Months)-latelyFallbackMonths, 0):]...)
 	}
-
-	l.active[month] = true
-	if l.spend[id] == nil {
-		l.spend[id] = map[string]float64{}
-		l.counts[id] = map[string]int{}
+	for _, m := range p.Lately {
+		scale[m] = 1
 	}
-	l.spend[id][month] += tx.ToBase
-	l.counts[id][month]++
-
-	if isFixed(name) || tx.ToBase <= 0 || strings.TrimSpace(tx.Payee) == "" {
-		return
+	if now.Day() >= partialMonthMinDay {
+		days := monthStart(now).AddDate(0, 1, -1).Day()
+		key := now.Format(monthKey)
+		p.Lately = append(p.Lately, key)
+		scale[key] = float64(days) / float64(now.Day())
 	}
-	// Keyed by category as well, so a total never mixes two categories under
-	// the name of whichever came first.
-	key := fmt.Sprintf("%d\x00%s", id, strings.ToLower(strings.TrimSpace(tx.Payee)))
-	m := l.merchants[key]
-	if m == nil {
-		m = &merchantAgg{name: strings.TrimSpace(tx.Payee), category: name, months: map[string]*merchantMonth{}}
-		l.merchants[key] = m
-	}
-	bump(m.months, month, tx.ToBase)
+	return scale
 }
 
-func bump(months map[string]*merchantMonth, month string, amount float64) {
-	mm := months[month]
-	if mm == nil {
-		mm = &merchantMonth{}
-		months[month] = mm
+// income expects each employer to pay what it paid in a typical recent
+// month. A source that has not paid lately is not counted on.
+func income(deposits []deposit, lately []string, scale map[string]float64) []IncomeLine {
+	bySource := map[string]map[string]float64{}
+	for _, d := range deposits {
+		if bySource[d.source] == nil {
+			bySource[d.source] = map[string]float64{}
+		}
+		bySource[d.source][d.month] += d.amount
 	}
-	mm.total += amount
-	mm.count++
-}
-
-func (l *ledger) addSource(payee, month string, amount float64) {
-	name := sourceName(payee)
-	s := l.sources[name]
-	if s == nil {
-		s = &sourceAgg{name: name, months: map[string]*merchantMonth{}}
-		l.sources[name] = s
+	out := []IncomeLine{}
+	for name, months := range bySource {
+		// Pay arrives on a schedule, so the month in progress is only read
+		// when it is all that exists.
+		var v []float64
+		for _, m := range lately {
+			if scale[m] == 1 {
+				v = append(v, months[m])
+			}
+		}
+		if len(v) == 0 {
+			for _, m := range lately {
+				v = append(v, months[m])
+			}
+		}
+		monthly := round2(median(v))
+		if monthly <= 0 {
+			continue
+		}
+		out = append(out, IncomeLine{Name: name, Monthly: monthly})
 	}
-	s.deposits = append(s.deposits, amount)
-	bump(s.months, month, amount)
+	sort.Slice(out, func(i, j int) bool { return out[i].Monthly > out[j].Monthly })
+	return out
 }
 
 // sourceName reduces a bank descriptor to an employer: the trace numbers that
@@ -467,159 +488,69 @@ func sourceName(payee string) string {
 	return strings.Join(kept, " ")
 }
 
-func (l *ledger) categoryLines(byID map[int64]*lunchmoney.Category, baseline []string, reviewKey string, isFixed func(string) bool) []CategoryLine {
-	lines := []CategoryLine{}
-	for id, months := range l.spend {
-		name := uncategorizedName
-		if cat := byID[id]; cat != nil {
-			name = cat.Name
-		}
-		history := series(months, baseline)
-		line := CategoryLine{
-			CategoryID:   id,
-			Name:         name,
-			Fixed:        isFixed(name),
-			Normal:       round2(median(history)),
-			Low:          round2(quantile(history, 0.25)),
-			Review:       round2(months[reviewKey]),
-			History:      history,
-			Transactions: l.counts[id][reviewKey],
-		}
-		// Refunds can outweigh a quiet category's spending; a negative
-		// "normal" would read as income.
-		line.Normal = max(line.Normal, 0)
-		line.Low = max(line.Low, 0)
-		line.Delta = round2(line.Review - line.Normal)
-		line.Target = line.Normal
-		if line.Normal == 0 && line.Review == 0 {
-			continue
-		}
-		lines = append(lines, line)
-	}
-	sort.Slice(lines, func(i, j int) bool {
-		a, b := max(lines[i].Normal, lines[i].Review), max(lines[j].Normal, lines[j].Review)
-		if a != b {
-			return a > b
-		}
-		return lines[i].Name < lines[j].Name
-	})
-	return lines
+// payeeKey groups one payee's charges whatever trace numbers and recipient
+// names the bank adds: its first two words without digits.
+func payeeKey(payee string) string {
+	words := strings.Fields(strings.ToLower(sourceName(payee)))
+	return strings.Join(words[:min(len(words), 2)], " ")
 }
 
-func (l *ledger) paycheckSources(baseline []string, reviewKey string) []PaycheckSource {
-	out := []PaycheckSource{}
-	for _, s := range l.sources {
-		monthly := make([]float64, 0, len(baseline))
-		for _, m := range baseline {
-			if mm := s.months[m]; mm != nil {
-				monthly = append(monthly, mm.total)
-			} else {
-				monthly = append(monthly, 0)
-			}
-		}
-		src := PaycheckSource{
-			Name:          s.name,
-			Typical:       round2(median(s.deposits)),
-			MonthlyNormal: round2(median(monthly)),
-		}
-		if mm := s.months[reviewKey]; mm != nil {
-			src.ReviewCount, src.ReviewTotal = mm.count, round2(mm.total)
-		}
-		out = append(out, src)
+// displayName shortens a bank descriptor full of trace numbers to its words.
+func displayName(payee string) string {
+	if !strings.ContainsAny(payee, "0123456789") {
+		return payee
 	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].MonthlyNormal != out[j].MonthlyNormal {
-			return out[i].MonthlyNormal > out[j].MonthlyNormal
-		}
-		return out[i].Name < out[j].Name
-	})
-	return out
+	return sourceName(payee)
 }
 
-func (l *ledger) reviewMerchants(reviewKey string) []MerchantLine {
-	out := []MerchantLine{}
-	for _, m := range l.merchants {
-		mm := m.months[reviewKey]
-		if mm == nil {
-			continue
-		}
-		out = append(out, MerchantLine{Name: m.name, Category: m.category, Count: mm.count, Total: round2(mm.total)})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Total != out[j].Total {
-			return out[i].Total > out[j].Total
-		}
-		return out[i].Name < out[j].Name
-	})
-	if len(out) > maxMerchants {
-		out = out[:maxMerchants]
-	}
-	return out
-}
-
-// recurringCharges finds subscriptions without relying on anyone having
-// registered them: one charge a month, at a steady amount, still running.
-func (l *ledger) recurringCharges(baseline []string, reviewKey string) []RecurringCharge {
-	window := append(append([]string{}, baseline...), reviewKey)
-	out := []RecurringCharge{}
-	for _, m := range l.merchants {
-		latest := m.months[reviewKey]
-		if latest == nil || latest.count != 1 {
-			continue
-		}
-		// Walk back from the review month and stop at the first gap: a
-		// quarterly charge must not be priced as a monthly one.
-		seen, lo, hi := 0, latest.total, latest.total
-		for i := len(window) - 1; i >= 0; i-- {
-			mm := m.months[window[i]]
-			if mm == nil || mm.count != 1 {
-				break
-			}
-			seen++
-			lo, hi = min(lo, mm.total), max(hi, mm.total)
-		}
-		if seen < minRecurringMonths || hi > lo*1.25 {
-			continue
-		}
-		out = append(out, RecurringCharge{Name: m.name, Category: m.category, Monthly: round2(latest.total), Months: seen})
-	}
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].Monthly != out[j].Monthly {
-			return out[i].Monthly > out[j].Monthly
-		}
-		return out[i].Name < out[j].Name
-	})
-	return out
-}
-
-func (p *Plan) notes(l *ledger, wanted int) {
-	switch n := len(p.BaselineMonths); {
-	case n == 0:
-		p.Notes = append(p.Notes, "no transactions before "+p.Month+", so there is no normal month to compare against yet")
-	case n < wanted:
-		p.Notes = append(p.Notes, fmt.Sprintf(
-			"normal is drawn from %d months rather than %d, because the transaction history starts in %s",
-			n, wanted, p.BaselineMonths[0]))
-	}
-	if p.Totals.PaycheckNormal == 0 && p.Totals.OtherIncomeNormal > 0 {
-		p.Notes = append(p.Notes, "no income matched the paycheck pattern; set ACNTNG_PAYCHECK_MATCH to a regular expression that matches the payroll payee")
-	}
-	if l.skippedCredits > 0 {
-		p.Notes = append(p.Notes, fmt.Sprintf(
-			"%d uncategorized credits were left out, since an unlabelled deposit is as likely a transfer as a refund",
-			l.skippedCredits))
-	}
-	p.Notes = append(p.Notes,
-		"normal is each category's median month, so the total is a sum of medians rather than any one month; transfers and card payments are excluded")
-}
-
-// series reads months out of a map in order, with zero for a missing month.
-func series(by map[string]float64, months []string) []float64 {
+// monthly totals values by month, in the order of months, zero when absent.
+func monthly(by map[string]float64, months []string, scale map[string]float64) []float64 {
 	out := make([]float64, 0, len(months))
 	for _, m := range months {
-		out = append(out, round2(by[m]))
+		f := 1.0
+		if scale != nil {
+			f = scale[m]
+		}
+		out = append(out, round2(by[m]*f))
 	}
 	return out
+}
+
+func sortOneOffs(o []OneOff) {
+	sort.SliceStable(o, func(i, j int) bool { return o[i].Amount > o[j].Amount })
+}
+
+func (p *Plan) notes(charges []charge, scale map[string]float64, skipped int) {
+	if len(p.Months) < 6 {
+		p.Notes = append(p.Notes, fmt.Sprintf("only %d months of history exist, so usual spending is a rough guess", len(p.Months)))
+	}
+	if len(p.Income) == 0 {
+		p.Notes = append(p.Notes, "no paychecks matched, so income is zero; set ACNTNG_PAYCHECK_MATCH to a pattern that matches the payroll payee")
+	}
+	var total, unc float64
+	count := 0
+	for _, ch := range charges {
+		if _, ok := scale[ch.month]; !ok {
+			continue
+		}
+		if ch.fixed {
+			continue
+		}
+		total += ch.amount
+		if ch.category == uncategorizedName {
+			unc += ch.amount
+			count++
+		}
+	}
+	if total > 0 && unc/total >= 0.05 {
+		p.Notes = append(p.Notes, fmt.Sprintf(
+			"%d recent transactions worth $%s have no category; they count as spending but cannot be planned until they are categorized",
+			count, money(unc)))
+	}
+	if skipped > 0 {
+		p.Notes = append(p.Notes, fmt.Sprintf(
+			"%d uncategorized credits were left out, since an unlabelled deposit is as likely a transfer as a refund", skipped))
+	}
 }
 
 func median(v []float64) float64 { return quantile(v, 0.5) }

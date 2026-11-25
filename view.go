@@ -91,6 +91,21 @@ func viewFuncs() template.FuncMap {
 			}
 			return money(f)
 		},
+		"dollars": signedDollars,
+		"verdict": verdict,
+		"first": func(s []string) string {
+			if len(s) == 0 {
+				return ""
+			}
+			return s[0]
+		},
+		"shortDay": func(s string) string {
+			t, err := time.Parse(dayKey, s)
+			if err != nil {
+				return s
+			}
+			return t.Format("2 Jan")
+		},
 		"sub":       func(a, b float64) float64 { return a - b },
 		"neg":       func(f float64) float64 { return -f },
 		"overLimit": func(p *float64, threshold float64) bool { return p != nil && *p > threshold },

@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -46,10 +46,14 @@ const (
 	catIncome int64 = iota + 1
 	catGroceries
 	catRestaurants
-	catMortgage
+	catLoans
 	catFees
 	catTransfer
 	catSubscriptions
+	catRent
+	catHome
+	catShopping
+	catMedical
 )
 
 func planCategories() []*lunchmoney.Category {
@@ -57,10 +61,14 @@ func planCategories() []*lunchmoney.Category {
 		{ID: catIncome, Name: "Income", IsIncome: true},
 		{ID: catGroceries, Name: "Groceries"},
 		{ID: catRestaurants, Name: "Restaurants"},
-		{ID: catMortgage, Name: "Mortgage"},
+		{ID: catLoans, Name: "Personal Loans"},
 		{ID: catFees, Name: "Fees"},
 		{ID: catTransfer, Name: "Payment, Transfer", ExcludeFromBudget: true, ExcludeFromTotals: true},
 		{ID: catSubscriptions, Name: "Subscriptions"},
+		{ID: catRent, Name: "Rent and utilities"},
+		{ID: catHome, Name: "Home improvement"},
+		{ID: catShopping, Name: "Shopping"},
+		{ID: catMedical, Name: "Medical"},
 	}
 }
 
@@ -76,43 +84,69 @@ func tx(date, payee string, amount float64, category int64) *lunchmoney.Transact
 	return t
 }
 
-// planNow is late November, so October is the last complete month.
+// planNow is late November, so December is planned and November counts
+// toward lately, scaled by 30/25.
 var planNow = time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
 
-// planFixture is six baseline months (April to September) and an October
-// that overspent on restaurants.
+var planSince = time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+
+// planFixture is a year of history with a move in September: new rent, an
+// old water bill and alarm still running, restaurants up, foreign fees, a
+// loan paid off in a lump and a sofa bought once.
 func planFixture() *fakeClient {
 	var txs []*lunchmoney.Transaction
-	restaurants := map[string]float64{
-		"2026-04": 300, "2026-05": 400, "2026-06": 500, "2026-07": 600, "2026-08": 400, "2026-09": 500,
+	var months []string
+	for m := time.Date(2025, 11, 1, 0, 0, 0, 0, time.UTC); !m.After(planNow); m = m.AddDate(0, 1, 0) {
+		months = append(months, m.Format(monthKey))
 	}
-	groceries := map[string]float64{
-		"2026-04": 500, "2026-05": 700, "2026-06": 600, "2026-07": 600, "2026-08": 800, "2026-09": 600,
-	}
-	for _, m := range []string{"2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10"} {
+	for i, m := range months {
+		cur := m == "2026-11"
+		moved := m >= "2026-09"
 		txs = append(txs,
-			tx(m+"-15", "ACME PAYROLL 260415 8812 ADA LOVELACE", -3000, catIncome),
-			tx(m+"-28", "ACME PAYROLL 260428 8813 ADA LOVELACE", -3000, catIncome),
-			tx(m+"-30", "Interest Payment", -2, catIncome),
-			tx(m+"-01", "Example Bank Mortgage", 2000, catMortgage),
+			tx(m+"-15", "ACME PAYROLL 1115 ADA LOVELACE", -3000, catIncome),
+			tx(m+"-03", "Old Town Water", 80, catRent),
+			tx(m+"-04", "Alarmly", 30, catHome),
+			tx(m+"-05", "Bankly", 300, catLoans),
+			tx(m+"-06", "Streamflix", 15, catSubscriptions),
+			tx(m+"-07", "Corner Store", 100, catShopping),
 			tx(m+"-02", "Card Payment", 1500, catTransfer),
-			tx(m+"-08", "Streamflix", 15, catSubscriptions),
+			tx(m+"-01", "MONTHLY SERVICE FEE", 15, catFees),
 		)
-		if m != "2026-10" {
+		if !cur {
+			txs = append(txs, tx(m+"-28", "ACME PAYROLL 1128 ADA LOVELACE", -3000, catIncome))
+		}
+		if m <= "2026-10" {
+			txs = append(txs, tx(m+"-01", "Lendco", 500, catLoans))
+		}
+
+		groceries, meals := 300.0, 2
+		if i%2 == 1 {
+			groceries, meals = 500, 4
+		}
+		if moved {
+			groceries, meals = 400, 7
+		}
+		if cur {
+			meals = 5
+		}
+		txs = append(txs, tx(m+"-12", "Fresh Market", groceries, catGroceries))
+		for d := range meals {
+			txs = append(txs, tx(fmt.Sprintf("%s-%02d", m, 10+d), "Noodle Cart", 100, catRestaurants))
+		}
+
+		if moved {
 			txs = append(txs,
-				tx(m+"-10", "Corner Bistro", restaurants[m], catRestaurants),
-				tx(m+"-12", "Fresh Market", groceries[m], catGroceries),
+				tx(m+"-01", "Harbor Lettings", 2000, catRent),
+				tx(m+"-08", "FOREIGN TRANSACTION FEE", 10, catFees),
+				tx(m+"-09", "FOREIGN TRANSACTION FEE", 10, catFees),
+				tx(m+"-10", "FOREIGN TRANSACTION FEE", 10, catFees),
 			)
 		}
 	}
 	txs = append(txs,
-		tx("2026-10-03", "Noodle Cart", 30, catRestaurants),
-		tx("2026-10-09", "Noodle Cart", 30, catRestaurants),
-		tx("2026-10-17", "Noodle Cart", 30, catRestaurants),
-		tx("2026-10-24", "Noodle Cart", 30, catRestaurants),
-		tx("2026-10-11", "Corner Bistro", 680, catRestaurants),
-		tx("2026-10-12", "Fresh Market", 600, catGroceries),
-		tx("2026-10-20", "Monthly Service Fee", 25, catFees),
+		tx("2026-03-14", "Clinic Visit", 600, catMedical),
+		tx("2026-10-20", "Lendco", 9000, catLoans),
+		tx("2026-10-05", "Big Sofa Co", 1500, catShopping),
 		tx("2026-10-21", "Mystery Shop", 400, 0),
 		tx("2026-10-22", "Unlabelled Deposit", -90, 0),
 	)
@@ -120,271 +154,269 @@ func planFixture() *fakeClient {
 	pending.IsPending = true
 	txs = append(txs, pending)
 
-	return &fakeClient{categories: planCategories(), transactions: txs}
+	return &fakeClient{
+		categories:   planCategories(),
+		transactions: txs,
+		manualAccounts: []*lunchmoney.ManualAccount{
+			manualAccount(1, "loan", "Lendco personal loan", "0", "active"),
+			manualAccount(2, "loan", "Bankly loan", "5000", "active"),
+		},
+	}
 }
 
-func buildFixturePlan(t *testing.T, c *fakeClient) *Plan {
+func planOpts(target float64) PlanOptions {
+	return PlanOptions{Now: planNow, Since: planSince, SavingsTarget: target}
+}
+
+func buildFixturePlan(t *testing.T, c *fakeClient, opts PlanOptions) *Plan {
 	t.Helper()
-	p, err := BuildPlan(context.Background(), c, PlanOptions{Review: lastCompleteMonth(planNow), Now: planNow})
+	p, err := BuildPlan(context.Background(), c, opts)
 	if err != nil {
 		t.Fatalf("BuildPlan: %v", err)
 	}
 	return p
 }
 
-func line(t *testing.T, p *Plan, name string) CategoryLine {
+func capLine(t *testing.T, p *Plan, name string) CapLine {
 	t.Helper()
-	for _, l := range p.Categories {
-		if l.Name == name {
+	for _, l := range p.Caps {
+		if l.Category == name {
 			return l
 		}
 	}
-	t.Fatalf("no category %q in %+v", name, p.Categories)
-	return CategoryLine{}
+	t.Fatalf("no cap %q in %+v", name, p.Caps)
+	return CapLine{}
 }
 
-func suggestion(p *Plan, kind, category string) *Suggestion {
-	for i, s := range p.Suggestions {
-		if s.Kind == kind && (category == "" || s.Category == category) {
-			return &p.Suggestions[i]
+func bill(p *Plan, name string) *BillLine {
+	for i, l := range p.Bills {
+		if l.Name == name {
+			return &p.Bills[i]
 		}
 	}
 	return nil
 }
 
-func TestBuildPlanComparesPaychecksToNormalSpend(t *testing.T) {
-	p := buildFixturePlan(t, planFixture())
-
-	if p.Month != "2026-10" || p.PlanFor != "2026-12" {
-		t.Errorf("month = %s, plan for = %s; want 2026-10 and 2026-12", p.Month, p.PlanFor)
+func change(p *Plan, kind, category string) *Change {
+	for i, c := range p.Changes {
+		if c.Kind == kind && (category == "" || c.Category == category) {
+			return &p.Changes[i]
+		}
 	}
-	if len(p.BaselineMonths) != 6 || p.BaselineMonths[0] != "2026-04" {
-		t.Errorf("baseline = %v", p.BaselineMonths)
+	return nil
+}
+
+func TestBuildPlanPlansNextMonthFromLately(t *testing.T) {
+	p := buildFixturePlan(t, planFixture(), planOpts(1000))
+
+	if p.PlanFor != "2026-12" {
+		t.Errorf("plan for = %s, want 2026-12", p.PlanFor)
+	}
+	if len(p.Months) != 12 || p.Months[0] != "2025-11" || p.Months[11] != "2026-10" {
+		t.Errorf("months = %v", p.Months)
+	}
+	if strings.Join(p.Lately, ",") != "2026-09,2026-10,2026-11" {
+		t.Errorf("lately = %v", p.Lately)
 	}
 
 	tot := p.Totals
-	if tot.PaycheckNormal != 6000 || tot.PaycheckReview != 6000 {
-		t.Errorf("paychecks normal/review = %v/%v, want 6000/6000", tot.PaycheckNormal, tot.PaycheckReview)
+	// Rent 2000, water 80, Bankly 300, a 600 doctor's bill spread over 12.
+	if tot.Income != 6000 || tot.Bills != 2430 {
+		t.Errorf("income/bills = %v/%v, want 6000/2430", tot.Income, tot.Bills)
 	}
-	if tot.OtherIncomeNormal != 2 {
-		t.Errorf("other income = %v, want 2: interest is income but not a paycheck", tot.OtherIncomeNormal)
+	// Groceries 400, restaurants 700, fees 45, shopping 100, alarm 30,
+	// streaming 15. The sofa is a one-off and is not counted again.
+	if tot.Spending != 1290 || tot.Unchanged != 2280 {
+		t.Errorf("spending/unchanged = %v/%v, want 1290/2280", tot.Spending, tot.Unchanged)
+	}
+	if tot.Savings != 455 || tot.Planned != 2735 || tot.Short != 0 {
+		t.Errorf("savings/planned/short = %v/%v/%v, want 455/2735/0", tot.Savings, tot.Planned, tot.Short)
+	}
+	if occ := bill(p, "Occasional medical"); occ == nil || occ.Monthly != 50 {
+		t.Errorf("occasional medical = %+v, want 50", occ)
+	}
+	if b := bill(p, "Bankly"); b == nil || !b.Debt || b.Monthly != 300 {
+		t.Errorf("Bankly = %+v, want a 300 debt bill", b)
+	}
+}
+
+func TestBuildPlanChanges(t *testing.T) {
+	p := buildFixturePlan(t, planFixture(), planOpts(1000))
+
+	fx := change(p, KindFee, "")
+	if fx == nil || fx.Saving != 30 || !strings.Contains(fx.Title, "foreign transaction") || !strings.Contains(fx.Detail, "9 foreign") {
+		t.Errorf("foreign fee change = %+v", fx)
+	}
+	water, alarm := false, false
+	for _, c := range p.Changes {
+		if c.Kind == KindOldBill {
+			water = water || (strings.Contains(c.Title, "Old Town Water") && c.Saving == 80)
+			alarm = alarm || (strings.Contains(c.Title, "Alarmly") && c.Saving == 30)
+		}
+		if strings.Contains(c.Title, "Harbor Lettings") || strings.Contains(c.Title, "Streamflix") {
+			t.Errorf("only home bills from before the move are old: %+v", c)
+		}
+	}
+	if !water || !alarm {
+		t.Errorf("want old water and alarm bills flagged, got %+v", p.Changes)
 	}
 
-	// Medians: mortgage 2000, groceries 600, restaurants 450, subscriptions 15.
-	if tot.SpendNormal != 3065 || tot.FixedNormal != 2000 || tot.FlexibleNormal != 1065 {
-		t.Errorf("normal spend total/fixed/flexible = %v/%v/%v", tot.SpendNormal, tot.FixedNormal, tot.FlexibleNormal)
+	creep := change(p, KindCreep, "Restaurants")
+	if creep == nil || creep.Saving != 300 || !strings.Contains(creep.Detail, "Noodle Cart") {
+		t.Fatalf("want restaurants back to 400 saving 300, got %+v", creep)
 	}
-	if tot.MarginNormal != 2935 {
-		t.Errorf("normal margin = %v, want 2935", tot.MarginNormal)
+	if got := capLine(t, p, "Restaurants"); got.Lately != 700 || got.Usual != 400 || got.Cap != 400 {
+		t.Errorf("restaurants cap = %+v", got)
 	}
-	// October: 2000 + 600 + 800 + 15 + 25 fees + 400 uncategorized.
-	if tot.SpendReview != 3840 || tot.MarginReview != 2160 {
-		t.Errorf("review spend/margin = %v/%v, want 3840/2160", tot.SpendReview, tot.MarginReview)
+	if change(p, KindCut, "") != nil {
+		t.Errorf("no cuts are needed when the target is met: %+v", p.Changes)
 	}
-	if tot.SavingsRate == nil || *tot.SavingsRate != 0.49 {
-		t.Errorf("savings rate = %v, want 0.49", tot.SavingsRate)
-	}
-
-	r := line(t, p, "Restaurants")
-	if r.Normal != 450 || r.Low != 400 || r.Review != 800 || r.Delta != 350 || r.Fixed {
-		t.Errorf("restaurants = %+v", r)
-	}
-	if m := line(t, p, "Mortgage"); !m.Fixed || m.Target != 2000 {
-		t.Errorf("mortgage = %+v, want fixed with target 2000", m)
-	}
-	for _, l := range p.Categories {
-		if l.Name == "Payment, Transfer" {
-			t.Errorf("excluded category is in the plan: %+v", l)
+	for i := 1; i < len(p.Changes); i++ {
+		if p.Changes[i].Saving > p.Changes[i-1].Saving {
+			t.Errorf("changes are not biggest first: %+v", p.Changes)
 		}
 	}
 }
 
-func TestBuildPlanSuggestions(t *testing.T) {
-	p := buildFixturePlan(t, planFixture())
+func TestBuildPlanCutsOnlyToReachTheTarget(t *testing.T) {
+	p := buildFixturePlan(t, planFixture(), planOpts(3000))
 
-	over := suggestion(p, KindOverNormal, "Restaurants")
-	if over == nil || *over.MonthlySavings != 350 {
-		t.Fatalf("want an over_normal restaurants suggestion saving 350, got %+v", p.Suggestions)
+	// 2735 leaves 265 to find. Restaurants has 200 of room down to its
+	// leanest quarter, folded into its existing change; groceries gives 65.
+	r := change(p, KindCreep, "Restaurants")
+	if r == nil || r.Saving != 500 || r.Title != "Hold Restaurants to $200" {
+		t.Errorf("restaurants = %+v, want one change to 200 saving 500", r)
 	}
-	if fees := suggestion(p, KindFees, "Fees"); fees == nil || *fees.MonthlySavings != 25 {
-		t.Errorf("want a fees suggestion saving 25, got %+v", fees)
+	g := change(p, KindCut, "Groceries")
+	if g == nil || g.Saving != 65 || g.Title != "Hold Groceries to $335" {
+		t.Errorf("groceries = %+v, want a 65 cut to 335", g)
 	}
-	if got := line(t, p, "Fees").Target; got != 0 {
-		t.Errorf("fees target = %v, want 0", got)
-	}
-	// Groceries matched normal, but a quarter of months came in at 600 or
-	// less, which is no saving against 600.
-	if trim := suggestion(p, KindTrim, "Groceries"); trim != nil {
-		t.Errorf("unexpected groceries trim: %+v", trim)
+	if p.Totals.Planned != 3000 || p.Totals.Short != 0 {
+		t.Errorf("planned/short = %v/%v", p.Totals.Planned, p.Totals.Short)
 	}
 
-	habit := suggestion(p, KindHabit, "")
-	if habit == nil || !strings.Contains(habit.Title, "Noodle Cart") || *habit.MonthlySavings != 40 {
-		t.Errorf("want a Noodle Cart habit saving 40, got %+v", habit)
-	}
-	subs := suggestion(p, KindSubscriptions, "")
-	if subs == nil || !strings.Contains(subs.Detail, "Streamflix") || subs.MonthlySavings != nil {
-		t.Errorf("want an unpriced subscriptions suggestion naming Streamflix, got %+v", subs)
-	}
-	if unc := suggestion(p, KindUncategorized, ""); unc == nil {
-		t.Errorf("400 of 3840 uncategorized should be flagged")
-	}
-	if s := suggestion(p, KindShortfall, ""); s != nil {
-		t.Errorf("no shortfall expected with a positive margin: %+v", s)
-	}
-
-	// Habits sit inside a category, so only the category savings count.
-	if p.Totals.PotentialSavings != 375 {
-		t.Errorf("potential savings = %v, want 375", p.Totals.PotentialSavings)
-	}
-	// Normal 3065, less the 0 fees target.
-	if p.Totals.TargetSpend != 3065 {
-		t.Errorf("target spend = %v, want 3065", p.Totals.TargetSpend)
-	}
-
-	found := false
-	for _, n := range p.Notes {
-		found = found || strings.Contains(n, "1 uncategorized credits")
-	}
-	if !found {
-		t.Errorf("want a note about the skipped uncategorized credit, got %v", p.Notes)
+	p = buildFixturePlan(t, planFixture(), planOpts(5000))
+	if p.Totals.Short <= 0 || !strings.Contains(verdict(p), "short of $5,000") || !strings.Contains(verdict(p), "debt payments") {
+		t.Errorf("an unreachable target should say so: %v, %q", p.Totals, verdict(p))
 	}
 }
 
-func TestBuildPlanTrimsTheLargestFlexibleCategories(t *testing.T) {
+func TestBuildPlanDropsPaidOffDebtAndOneOffs(t *testing.T) {
+	p := buildFixturePlan(t, planFixture(), planOpts(1000))
+
+	if bill(p, "Lendco") != nil {
+		t.Errorf("a paid-off loan is still a bill: %+v", p.Bills)
+	}
+	if len(p.Stopped) != 1 || p.Stopped[0].Name != "Lendco" || p.Stopped[0].Monthly != 500 || p.Stopped[0].Reason != "paid off" {
+		t.Errorf("stopped = %+v", p.Stopped)
+	}
+	got := map[string]string{}
+	for _, o := range p.OneOffs {
+		got[o.Payee] = o.Reason
+	}
+	if got["Lendco"] != "extra payment toward the balance" || got["Big Sofa Co"] != "one-time purchase" || len(got) != 2 {
+		t.Errorf("one-offs = %+v", p.OneOffs)
+	}
+	if s := capLine(t, p, "Shopping"); s.Lately != 100 {
+		t.Errorf("shopping lately = %v, want 100 without the sofa", s.Lately)
+	}
+}
+
+func TestBuildPlanKeepsADebtStillOwed(t *testing.T) {
 	c := planFixture()
-	// A normal October for restaurants leaves room below it.
-	var kept []*lunchmoney.Transaction
-	for _, tx := range c.transactions {
-		if tx.Date >= "2026-10-01" && *orZero(tx.CategoryID) == catRestaurants {
-			continue
-		}
-		kept = append(kept, tx)
-	}
-	kept = append(kept, tx("2026-10-11", "Corner Bistro", 460, catRestaurants))
-	c.transactions = kept
+	c.manualAccounts[0].Balance = "4000"
 
-	p := buildFixturePlan(t, c)
-	trim := suggestion(p, KindTrim, "Restaurants")
-	if trim == nil || *trim.MonthlySavings != 60 {
-		t.Fatalf("want a restaurants trim saving 60 (460 against a low of 400), got %+v", p.Suggestions)
-	}
-	if got := line(t, p, "Restaurants").Target; got != 400 {
-		t.Errorf("restaurants target = %v, want 400", got)
+	p := buildFixturePlan(t, c, planOpts(1000))
+	if b := bill(p, "Lendco"); b == nil || b.Monthly != 500 {
+		t.Errorf("a loan with a balance left stays a bill after an extra payment: %+v", p.Bills)
 	}
 }
 
-func orZero(p *int64) *int64 {
-	if p == nil {
-		return new(int64(0))
+func TestBuildPlanWithoutSinceUsesTheLastThreeMonths(t *testing.T) {
+	opts := planOpts(1000)
+	opts.Since = time.Time{}
+	p := buildFixturePlan(t, planFixture(), opts)
+
+	if strings.Join(p.Lately, ",") != "2026-08,2026-09,2026-10,2026-11" {
+		t.Errorf("lately = %v", p.Lately)
 	}
-	return p
+	if change(p, KindOldBill, "") != nil {
+		t.Errorf("old bills need a move date: %+v", p.Changes)
+	}
 }
 
-func TestBuildPlanReportsAShortfallFirst(t *testing.T) {
-	c := planFixture()
-	for _, tx := range c.transactions {
-		if tx.Payee == "Example Bank Mortgage" {
-			tx.ToBase = 7000
-		}
-	}
-
-	p := buildFixturePlan(t, c)
-	if p.Totals.MarginNormal != -2065 {
-		t.Fatalf("normal margin = %v, want -2065", p.Totals.MarginNormal)
-	}
-	if len(p.Suggestions) == 0 || p.Suggestions[0].Kind != KindShortfall {
-		t.Errorf("want the shortfall first, got %+v", p.Suggestions)
+func TestBuildPlanNotes(t *testing.T) {
+	p := buildFixturePlan(t, planFixture(), planOpts(1000))
+	joined := strings.Join(p.Notes, "\n")
+	if !strings.Contains(joined, "1 uncategorized credits") || !strings.Contains(joined, "have no category") {
+		t.Errorf("notes = %v", p.Notes)
 	}
 }
 
 func TestBuildPlanPagesThroughTransactions(t *testing.T) {
 	c := planFixture()
-	c.pageSize = 7
+	c.pageSize = 17
 
-	p := buildFixturePlan(t, c)
+	p := buildFixturePlan(t, c, planOpts(1000))
 	if c.transactionGets < 2 {
 		t.Fatalf("fetched in %d calls, want several pages", c.transactionGets)
 	}
-	if p.Totals.SpendReview != 3840 {
-		t.Errorf("review spend = %v across pages, want 3840", p.Totals.SpendReview)
+	if p.Totals.Planned != 2735 {
+		t.Errorf("planned = %v across pages, want 2735", p.Totals.Planned)
 	}
 }
 
-func TestBuildPlanStartsTheBaselineWhereHistoryDoes(t *testing.T) {
+func TestBuildPlanSurvivesMissingLoans(t *testing.T) {
 	c := planFixture()
-	var kept []*lunchmoney.Transaction
-	for _, tx := range c.transactions {
-		if tx.Date >= "2026-08-01" {
-			kept = append(kept, tx)
-		}
-	}
-	c.transactions = kept
-
-	p := buildFixturePlan(t, c)
-	if len(p.BaselineMonths) != 2 || p.BaselineMonths[0] != "2026-08" {
-		t.Fatalf("baseline = %v, want August and September", p.BaselineMonths)
-	}
-	if got := line(t, p, "Restaurants").Normal; got != 450 {
-		t.Errorf("restaurants normal = %v, want 450 from the two months with data", got)
-	}
-}
-
-func TestBuildPlanHonoursPaycheckPatternAndFixedOverride(t *testing.T) {
-	p, err := BuildPlan(context.Background(), planFixture(), PlanOptions{
-		Review:        lastCompleteMonth(planNow),
-		Now:           planNow,
-		PaycheckMatch: regexp.MustCompile(`(?i)interest`),
-		Fixed:         fixedSet("Groceries, restaurants"),
-	})
-	if err != nil {
-		t.Fatalf("BuildPlan: %v", err)
-	}
-	if p.Totals.PaycheckNormal != 2 || p.Totals.OtherIncomeNormal != 6000 {
-		t.Errorf("paycheck/other = %v/%v, want 2/6000", p.Totals.PaycheckNormal, p.Totals.OtherIncomeNormal)
-	}
-	if !line(t, p, "Restaurants").Fixed || suggestion(p, KindOverNormal, "Restaurants") != nil {
-		t.Errorf("a fixed category must not be suggested")
-	}
-	if !line(t, p, "Mortgage").Fixed {
-		t.Errorf("debt stays fixed whatever the override says")
+	c.manualErr = errors.New("boom")
+	p := buildFixturePlan(t, c, planOpts(1000))
+	if !strings.Contains(strings.Join(p.Notes, "\n"), "loan balances could not be read") {
+		t.Errorf("notes = %v", p.Notes)
 	}
 }
 
 func TestBuildPlanSurfacesFetchErrors(t *testing.T) {
 	c := planFixture()
 	c.transactionErr = errors.New("boom")
-	if _, err := BuildPlan(context.Background(), c, PlanOptions{Review: planNow, Now: planNow}); err == nil {
+	if _, err := BuildPlan(context.Background(), c, planOpts(1000)); err == nil {
 		t.Fatal("want an error when transactions cannot be read")
 	}
 }
 
-func TestPaycheckSourcesDropTraceNumbersAndNames(t *testing.T) {
-	p := buildFixturePlan(t, planFixture())
-	if len(p.Paychecks) != 1 {
-		t.Fatalf("paychecks = %+v, want one source", p.Paychecks)
+func TestBuildPlanWithoutHistory(t *testing.T) {
+	p := buildFixturePlan(t, &fakeClient{categories: planCategories()}, planOpts(1000))
+	if len(p.Months) != 0 || len(p.Changes) != 0 || len(p.Notes) != 1 {
+		t.Errorf("plan = %+v", p)
 	}
-	src := p.Paychecks[0]
-	if src.Name != "ACME PAYROLL ADA" || src.Typical != 3000 || src.MonthlyNormal != 6000 || src.ReviewCount != 2 {
-		t.Errorf("source = %+v", src)
+	if _, err := renderTemplate("plan.html", p); err != nil {
+		t.Errorf("an empty plan must still render: %v", err)
 	}
 }
 
-func TestPlanFor(t *testing.T) {
-	day := func(m time.Month, d int) time.Time { return time.Date(2026, m, d, 0, 0, 0, 0, time.UTC) }
-	for _, tc := range []struct {
-		name        string
-		review, now time.Time
-		want        string
-	}{
-		{"early in the month plans that month", day(10, 1), day(11, 3), "2026-11"},
-		{"late in the month plans the next", day(10, 1), day(11, 25), "2026-12"},
-		{"an old review month plans the current one", day(6, 1), day(11, 3), "2026-11"},
-		{"reviewing the month in progress plans the next", day(11, 1), day(11, 3), "2026-12"},
+func TestFeeKind(t *testing.T) {
+	for text, want := range map[string]string{
+		"Interest Charge on Pay Over Time Purchases": feeInterest,
+		"INTERNATIONAL PURCHASE TRANSACTION FEE":     feeForeign,
+		"OVERDRAFT FEE FOR A TRANSACTION":            feeOverdraft,
+		"RETURN PAYMENT FEE":                         feeOverdraft,
+		"MONTHLY SERVICE FEE":                        feeService,
+		"Bean Counter Coffee":                        "",
 	} {
-		if got := planFor(tc.review, tc.now).Format(monthKey); got != tc.want {
-			t.Errorf("%s: got %s, want %s", tc.name, got, tc.want)
+		if got := feeKind(text, "Coffee"); got != want {
+			t.Errorf("feeKind(%q) = %q, want %q", text, got, want)
 		}
+	}
+	if got := feeKind("Some Bank", "Fees"); got != feeOther {
+		t.Errorf("anything in a fees category is a fee, got %q", got)
+	}
+}
+
+func TestPayeeKeyDropsTraceNumbers(t *testing.T) {
+	if a, b := payeeKey("WIDGET LENDING ACCT 261016 XXXXX4000 ADA"), payeeKey("Widget Lending"); a != b {
+		t.Errorf("keys differ: %q and %q", a, b)
+	}
+	if got := displayName("Skyways 93201779988"); got != "Skyways" {
+		t.Errorf("displayName = %q", got)
 	}
 }
 
@@ -401,31 +433,17 @@ func TestQuantile(t *testing.T) {
 	}
 }
 
-func planServer(c Fetcher, coach *Coach) http.Handler {
+func planServer(c Fetcher) http.Handler {
 	return router(&Server{
-		Log:    zap.NewNop().Sugar(),
-		Client: c,
-		Coach:  coach,
-		Now:    fixedNow(planNow),
+		Log:         zap.NewNop().Sugar(),
+		Client:      c,
+		PlanOptions: planOpts(1000),
+		Now:         fixedNow(planNow),
 	}, http.NotFoundHandler())
 }
 
 func TestPlanPageRenders(t *testing.T) {
-	adviser := &fakeAdviser{}
-	h := planServer(planFixture(), &Coach{Adviser: adviser, Store: &MemoryStore{}, MaxCalls: 1})
-
-	// Viewing must never spend a model call; only the explicit post does.
-	for _, path := range []string{"/", "/plan"} {
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil))
-		if w.Code != http.StatusOK || strings.Contains(w.Body.String(), "fake-model") {
-			t.Fatalf("%s before generating: status %d", path, w.Code)
-		}
-	}
-	if adviser.calls != 0 {
-		t.Fatalf("page views called the model %d times", adviser.calls)
-	}
-	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/advice", nil))
+	h := planServer(planFixture())
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
@@ -434,17 +452,23 @@ func TestPlanPageRenders(t *testing.T) {
 	}
 	body := w.Body.String()
 	for _, want := range []string{
-		"Plan for December 2026", "Reviewing October 2026", "Bring Restaurants back to $450",
-		"Cook at home twice a week", "Corner Bistro alone was $680", "fake-model", "Noodle Cart", "Streamflix", "ACME PAYROLL ADA",
+		"December 2026", "If nothing changes, December 2026 leaves $2,280.", "What to change",
+		"Bring Restaurants back to $400", "Cancel Old Town Water if it is for the old place",
+		"Use a card with no foreign transaction fees", "Harbor Lettings", "Big Sofa Co", "Lendco", "paid off",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("page is missing %q", want)
 		}
 	}
+	for _, gone := range []string{"?month=", "Generate", "Reviewing"} {
+		if strings.Contains(body, gone) {
+			t.Errorf("page still has %q", gone)
+		}
+	}
 }
 
-func TestPlanJSONDefaultsToLastCompleteMonth(t *testing.T) {
-	h := planServer(planFixture(), nil)
+func TestPlanJSON(t *testing.T) {
+	h := planServer(planFixture())
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/plan", nil))
@@ -455,21 +479,15 @@ func TestPlanJSONDefaultsToLastCompleteMonth(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &p); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if p.Month != "2026-10" || p.Advice != nil || len(p.Suggestions) == 0 {
-		t.Errorf("plan = month %s, advice %v, %d suggestions", p.Month, p.Advice, len(p.Suggestions))
-	}
-
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/plan?month=nope", nil))
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("bad month status = %d, want 400", w.Code)
+	if p.PlanFor != "2026-12" || p.Totals.Planned != 2735 || len(p.Changes) == 0 {
+		t.Errorf("plan = %s, planned %v, %d changes", p.PlanFor, p.Totals.Planned, len(p.Changes))
 	}
 }
 
 func TestPlanReportsUpstreamFailure(t *testing.T) {
 	c := planFixture()
 	c.transactionErr = errors.New("boom")
-	h := planServer(c, nil)
+	h := planServer(c)
 
 	for _, path := range []string{"/", "/plan"} {
 		w := httptest.NewRecorder()
@@ -480,30 +498,8 @@ func TestPlanReportsUpstreamFailure(t *testing.T) {
 	}
 }
 
-func TestAdviceRefreshRedirectsRelativelyAndRejectsCrossSite(t *testing.T) {
-	adviser := &fakeAdviser{}
-	h := planServer(planFixture(), &Coach{Adviser: adviser, Store: &MemoryStore{}, MaxCalls: 5})
-
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/advice?month=2026-10", nil))
-	if w.Code != http.StatusSeeOther || w.Header().Get("Location") != "./?month=2026-10" {
-		t.Fatalf("status = %d, location = %q", w.Code, w.Header().Get("Location"))
-	}
-	if adviser.calls != 1 {
-		t.Errorf("adviser calls = %d, want 1", adviser.calls)
-	}
-
-	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/advice?month=2026-10", nil)
-	req.Header.Set("Sec-Fetch-Site", "cross-site")
-	w = httptest.NewRecorder()
-	h.ServeHTTP(w, req)
-	if w.Code != http.StatusForbidden || adviser.calls != 1 {
-		t.Errorf("cross-site post: status = %d, adviser calls = %d; want 403 and no new call", w.Code, adviser.calls)
-	}
-}
-
-func TestOldDashboardMovedToDashboardPath(t *testing.T) {
-	h := planServer(planFixture(), nil)
+func TestDashboardStillRenders(t *testing.T) {
+	h := planServer(planFixture())
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/dashboard", nil))
 	if !strings.Contains(w.Body.String(), "<h1>acntng</h1>") {
@@ -511,128 +507,31 @@ func TestOldDashboardMovedToDashboardPath(t *testing.T) {
 	}
 }
 
-func TestAdviceRefreshFailureReachesThePage(t *testing.T) {
-	adviser := &fakeAdviser{}
-	h := planServer(planFixture(), &Coach{Adviser: adviser, Store: &MemoryStore{}, MaxCalls: 1})
-	post := func() string {
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/advice?month=2026-10", nil))
-		return w.Header().Get("Location")
+func TestPrintPlan(t *testing.T) {
+	var b strings.Builder
+	if err := printPlan(&b, buildFixturePlan(t, planFixture(), planOpts(1000))); err != nil {
+		t.Fatal(err)
 	}
-
-	if got := post(); got != "./?month=2026-10" {
-		t.Fatalf("first refresh location = %q", got)
-	}
-	location := post()
-	if location != "./?month=2026-10&advice=budget" {
-		t.Fatalf("over-budget refresh location = %q", location)
-	}
-
-	// The stored advice stays, with the reason nothing new arrived.
-	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, strings.TrimPrefix(location, "."), nil))
-	body := w.Body.String()
-	if !strings.Contains(body, "AI calls are used up") || !strings.Contains(body, "Cook at home twice a week") {
-		t.Errorf("page should show the budget message beside the kept advice")
-	}
-	if adviser.calls != 1 {
-		t.Errorf("adviser calls = %d, want 1", adviser.calls)
+	for _, want := range []string{"December 2026", "CHANGES", "Bring Restaurants back to $400", "NO LONGER DUE", "Lendco"} {
+		if !strings.Contains(b.String(), want) {
+			t.Errorf("output is missing %q:\n%s", want, b.String())
+		}
 	}
 }
 
-func TestCoffeeIsNotAFee(t *testing.T) {
-	c := planFixture()
-	const catCoffee int64 = 50
-	c.categories = append(c.categories, &lunchmoney.Category{ID: catCoffee, Name: "Coffee"})
-	for _, m := range []string{"2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09", "2026-10"} {
-		c.transactions = append(c.transactions, tx(m+"-05", "Bean Counter", 40, catCoffee))
+func TestPlanOptionsFromEnv(t *testing.T) {
+	t.Setenv("ACNTNG_SINCE", "2026-09")
+	t.Setenv("ACNTNG_SAVINGS_TARGET", "750")
+	opts, err := planOptionsFromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !opts.Since.Equal(planSince) || opts.SavingsTarget != 750 || opts.HistoryMonths != defaultHistoryMonths {
+		t.Errorf("opts = %+v", opts)
 	}
 
-	p := buildFixturePlan(t, c)
-	if got := line(t, p, "Coffee").Target; got != 40 {
-		t.Errorf("coffee target = %v, want its normal 40", got)
-	}
-	if s := suggestion(p, KindFees, "Coffee"); s != nil {
-		t.Errorf("coffee was reported as a fee: %+v", s)
-	}
-}
-
-func TestMerchantsAreSplitByCategory(t *testing.T) {
-	c := planFixture()
-	c.transactions = append(c.transactions, tx("2026-10-06", "Fresh Market", 75, catRestaurants))
-
-	p := buildFixturePlan(t, c)
-	got := map[string]float64{}
-	for _, m := range p.Merchants {
-		if m.Name == "Fresh Market" {
-			got[m.Category] = m.Total
-		}
-	}
-	if got["Groceries"] != 600 || got["Restaurants"] != 75 {
-		t.Errorf("Fresh Market by category = %v, want 600 groceries and 75 restaurants", got)
-	}
-}
-
-func TestQuarterlyChargesAreNotMonthlySubscriptions(t *testing.T) {
-	c := planFixture()
-	for _, m := range []string{"2026-04", "2026-07", "2026-10"} {
-		c.transactions = append(c.transactions, tx(m+"-19", "Quarterly Box", 90, catSubscriptions))
-	}
-
-	p := buildFixturePlan(t, c)
-	for _, r := range p.Recurring {
-		if r.Name == "Quarterly Box" {
-			t.Errorf("a charge every third month was priced as monthly: %+v", r)
-		}
-		if r.Name == "Streamflix" && r.Months != 7 {
-			t.Errorf("Streamflix run = %d months, want 7", r.Months)
-		}
-	}
-	if len(p.Recurring) != 1 {
-		t.Errorf("recurring = %+v, want only Streamflix", p.Recurring)
-	}
-}
-
-func TestBuildPlanWithoutHistoryMakesNoComparisons(t *testing.T) {
-	c := planFixture()
-	var kept []*lunchmoney.Transaction
-	for _, tx := range c.transactions {
-		if tx.Date >= "2026-10-01" {
-			kept = append(kept, tx)
-		}
-	}
-	c.transactions = kept
-
-	p := buildFixturePlan(t, c)
-	if len(p.BaselineMonths) != 0 {
-		t.Fatalf("baseline = %v, want none", p.BaselineMonths)
-	}
-	if got := line(t, p, "Mortgage").Target; got != 2000 {
-		t.Errorf("mortgage target = %v, want the month itself: a bill is not overspending for lack of history", got)
-	}
-	for _, kind := range []string{KindOverNormal, KindTrim, KindFees, KindSubscriptions} {
-		if s := suggestion(p, kind, ""); s != nil {
-			t.Errorf("no %s suggestion is possible without a normal month: %+v", kind, s)
-		}
-	}
-	if p.Totals.PotentialSavings != 0 || p.Totals.TargetSpend != p.Totals.SpendReview {
-		t.Errorf("savings %v, target %v, spend %v", p.Totals.PotentialSavings, p.Totals.TargetSpend, p.Totals.SpendReview)
-	}
-}
-
-func TestShortfallCountsOnlyTargetsBelowNormal(t *testing.T) {
-	c := planFixture()
-	for _, tx := range c.transactions {
-		if tx.Payee == "Example Bank Mortgage" {
-			tx.ToBase = 7000
-		}
-	}
-
-	// Restaurants back to normal saves 350 against October but nothing
-	// against a normal month; no flexible target sits below normal here.
-	p := buildFixturePlan(t, c)
-	short := suggestion(p, KindShortfall, "")
-	if short == nil || !strings.Contains(short.Detail, "close $0 of that gap") {
-		t.Errorf("shortfall = %+v", short)
+	t.Setenv("ACNTNG_SINCE", "September")
+	if _, err := planOptionsFromEnv(); err == nil {
+		t.Error("want an error for a malformed ACNTNG_SINCE")
 	}
 }
