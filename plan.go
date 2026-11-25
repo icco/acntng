@@ -111,6 +111,8 @@ type CapLine struct {
 	Cap      float64 `json:"cap"`
 	// Low is the 25th percentile month, the floor a cut aims for.
 	Low float64 `json:"low"`
+	// History is the category's complete months, oldest first.
+	History []float64 `json:"history"`
 }
 
 // OneOff is a large charge read but not planned for again.
@@ -153,6 +155,12 @@ type Plan struct {
 	Stopped []StoppedBill `json:"stopped"`
 	OneOffs []OneOff      `json:"one_offs"`
 	Notes   []string      `json:"notes,omitempty"`
+	// Options are every lever the changes were chosen from.
+	Options []Option `json:"options"`
+	// ChosenBy is "rules", or the model that ranked the options.
+	ChosenBy string `json:"chosen_by"`
+	// Summary is the model's two sentences on the month, when it ranked.
+	Summary string `json:"summary,omitempty"`
 }
 
 // TransactionFetcher is the slice of the Lunch Money client the plan reads
@@ -250,6 +258,8 @@ func BuildPlan(ctx context.Context, c PlanFetcher, opts PlanOptions) (*Plan, err
 		Caps:        []CapLine{},
 		Stopped:     []StoppedBill{},
 		OneOffs:     []OneOff{},
+		Options:     []Option{},
+		ChosenBy:    "rules",
 	}
 	p.Totals.Target = opts.SavingsTarget
 
@@ -312,6 +322,8 @@ func BuildPlan(ctx context.Context, c PlanFetcher, opts PlanOptions) (*Plan, err
 	t.Income, t.Bills, t.Spending = round2(t.Income), round2(t.Bills), round2(t.Spending)
 	t.Unchanged = round2(t.Income - t.Bills - t.Spending)
 
+	p.Options = options(p, charges, scale, b, opts)
+	p.ChosenBy = "rules"
 	p.Changes = changes(p, charges, scale, b, opts)
 	t.Planned = p.planned()
 	t.Savings = round2(t.Planned - t.Unchanged)
@@ -603,4 +615,14 @@ func (p *Plan) planned() float64 {
 		left -= c.Cap
 	}
 	return round2(left)
+}
+
+// clone copies the plan deeply enough to apply changes to the copy.
+func (p *Plan) clone() *Plan {
+	out := *p
+	out.Caps = append([]CapLine{}, p.Caps...)
+	out.Bills = append([]BillLine{}, p.Bills...)
+	out.Changes = append([]Change{}, p.Changes...)
+	out.Notes = append([]string{}, p.Notes...)
+	return &out
 }

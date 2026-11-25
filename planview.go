@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,22 +14,56 @@ import (
 	"go.uber.org/zap"
 )
 
-// plan returns next month's plan, from cache when fresh.
+// plan returns next month's plan, from cache when fresh, with its changes
+// chosen by the model when one is configured and by the rules otherwise.
 func (s *Server) plan(ctx context.Context, now time.Time) (*Plan, error) {
 	const key = "next"
-	if p, ok := s.planCache.get(key, now); ok {
-		return p, nil
+	p, ok := s.planCache.get(key, now)
+	if !ok {
+		opts := s.PlanOptions
+		opts.Now = now
+		var err error
+		if p, err = BuildPlan(ctx, s.Client, opts); err != nil {
+			return nil, err
+		}
+		s.planCache.set(key, p, now)
 	}
+	return s.ranked(ctx, p, now), nil
+}
 
-	opts := s.PlanOptions
-	opts.Now = now
-	p, err := BuildPlan(ctx, s.Client, opts)
+// ranked has the model choose the plan's changes. When it cannot, the rules'
+// choice stands and a note says why.
+func (s *Server) ranked(ctx context.Context, p *Plan, now time.Time) *Plan {
+	if s.Ranker == nil || len(p.Options) == 0 {
+		return p
+	}
+	since := ""
+	if !s.PlanOptions.Since.IsZero() {
+		since = s.PlanOptions.Since.Format(monthKey)
+	}
+	out := p.clone()
+	prompt, err := rankPrompt(p, since)
+	var r *Ranking
+	if err == nil {
+		r, err = s.rank.get(ctx, s.Ranker, prompt, now)
+	}
+	var picks []Pick
+	if err == nil {
+		picks = r.clean(p)
+		if len(picks) == 0 {
+			err = errors.New("the model picked no known option")
+		}
+	}
 	if err != nil {
-		return nil, err
+		if s.Log != nil {
+			s.Log.Warnw("could not rank changes; using the rules", zap.Error(err))
+		}
+		out.Notes = append(out.Notes, "the model could not rank the changes, so the rules chose them: "+err.Error())
+		return out
 	}
-
-	s.planCache.set(key, p, now)
-	return p, nil
+	out.apply(picks)
+	out.ChosenBy, out.Summary = r.Model, r.Summary
+	return out
 }
 
 // handlePlanPage renders the plan as HTML.
@@ -77,11 +112,19 @@ func printPlan(out io.Writer, p *Plan) error {
 	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
 
 	fmt.Fprintf(w, "\n=== %s ===\n\n  %s\n  %s\n", describeMonth(p.PlanFor), verdict(p), basis(p))
+	if p.Summary != "" {
+		fmt.Fprintf(w, "  %s\n", p.Summary)
+	}
 
 	fmt.Fprint(w, "\nCHANGES\n")
 	for _, c := range p.Changes {
-		fmt.Fprintf(w, "  %s\t%s/mo\n    %s\n", c.Title, money(c.Saving), c.Detail)
+		fmt.Fprintf(w, "  %s\t%s/mo\n", c.Title, money(c.Saving))
+		if c.Why != "" {
+			fmt.Fprintf(w, "    %s\n", c.Why)
+		}
+		fmt.Fprintf(w, "    %s\n", c.Detail)
 	}
+	fmt.Fprintf(w, "  (chosen by %s)\n", p.ChosenBy)
 	if len(p.Changes) == 0 {
 		fmt.Fprint(w, "  none needed\n")
 	}
