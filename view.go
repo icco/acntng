@@ -84,6 +84,13 @@ func viewFuncs() template.FuncMap {
 		"stamp": func(t time.Time) string {
 			return t.Format("2 Jan 2006 15:04 MST")
 		},
+		// signed shows a difference with its direction spelled out.
+		"signed": func(f float64) string {
+			if math.Round(f) > 0 {
+				return "+" + money(f)
+			}
+			return money(f)
+		},
 		"sub":       func(a, b float64) float64 { return a - b },
 		"neg":       func(f float64) float64 { return -f },
 		"overLimit": func(p *float64, threshold float64) bool { return p != nil && *p > threshold },

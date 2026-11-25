@@ -12,12 +12,16 @@ import (
 
 // fakeClient serves canned Lunch Money data.
 type fakeClient struct {
-	manualAccounts []*lunchmoney.ManualAccount
-	plaid          []*lunchmoney.PlaidAccount
-	recurring      []*lunchmoney.RecurringItem
-	summary        *lunchmoney.BudgetSummary
-	categories     []*lunchmoney.Category
-	user           *lunchmoney.User
+	manualAccounts  []*lunchmoney.ManualAccount
+	plaid           []*lunchmoney.PlaidAccount
+	recurring       []*lunchmoney.RecurringItem
+	summary         *lunchmoney.BudgetSummary
+	categories      []*lunchmoney.Category
+	user            *lunchmoney.User
+	transactions    []*lunchmoney.Transaction
+	pageSize        int
+	transactionErr  error
+	transactionGets int
 
 	manualErr     error
 	plaidErr      error

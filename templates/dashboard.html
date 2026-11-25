@@ -6,67 +6,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>acntng{{with .Month}} · {{monthName .}}{{end}}</title>
-<style>
-  :root {
-    --paper: #f7f8f6; --raised: #fff; --sunk: #eef0ed;
-    --ink: #10151c; --soft: #414b52; --faint: #6d7a77;
-    --rule: #d5dad6; --rule-strong: #b4bcb7;
-    --good: #2f6f62; --bad: #a63a2a; --warn: #9a6b1f;
-    --track: #e3e6e3;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --paper: #0d1116; --raised: #151b21; --sunk: #1b2228;
-      --ink: #e8ebe8; --soft: #aeb8b5; --faint: #7d8a86;
-      --rule: #2a333a; --rule-strong: #3d474e;
-      --good: #6fc4ac; --bad: #e28474; --warn: #d9a94f;
-      --track: #222a31;
-    }
-  }
-  *, *::before, *::after { box-sizing: border-box; }
-  body {
-    margin: 0; background: var(--paper); color: var(--ink);
-    font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-    -webkit-font-smoothing: antialiased;
-  }
-  .wrap { max-width: 60rem; margin: 0 auto; padding: 2rem 1.25rem 5rem; display: flex; flex-direction: column; gap: 2.5rem; }
-  .num { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
-  h1 { font-size: 1.6rem; margin: 0; letter-spacing: -0.01em; }
-  h2 { font-size: 1.2rem; margin: 0 0 0.75rem; }
-  .eyebrow { font-family: ui-monospace, monospace; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.12em; color: var(--faint); margin: 0; }
-  header { border-top: 2px solid var(--ink); padding-top: 0.85rem; display: flex; flex-wrap: wrap; gap: 0.35rem 1.5rem; justify-content: space-between; align-items: baseline; }
-
-  .figs { display: grid; gap: 1.25rem 2rem; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
-          background: var(--raised); border: 1px solid var(--rule); padding: 1.25rem; }
-  .fig { display: flex; flex-direction: column; gap: 0.2rem; }
-  .fig b { font-family: ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: 1.5rem; font-weight: 500; line-height: 1.1; }
-  .fig span { font-size: 0.75rem; color: var(--faint); }
-  .good { color: var(--good); } .bad { color: var(--bad); } .warn { color: var(--warn); }
-
-  .scroll { overflow-x: auto; border: 1px solid var(--rule); background: var(--raised); }
-  table { border-collapse: collapse; width: 100%; min-width: 33rem; }
-  th, td { padding: 0.45rem 0.85rem; text-align: right; }
-  th:first-child, td:first-child { text-align: left; }
-  thead th { font-family: ui-monospace, monospace; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.08em;
-             color: var(--faint); font-weight: 500; border-bottom: 1px solid var(--rule-strong); white-space: nowrap; }
-  tbody td { border-bottom: 1px solid var(--rule); }
-  tr.band td { background: var(--sunk); font-family: ui-monospace, monospace; font-size: 0.7rem;
-               text-transform: uppercase; letter-spacing: 0.1em; color: var(--soft); }
-  tr.sum td { font-weight: 600; background: var(--sunk); border-top: 1px solid var(--rule-strong); border-bottom: none; }
-
-  .track { width: 4.5rem; height: 6px; background: var(--track); border-radius: 3px; overflow: hidden; display: inline-block; vertical-align: middle; }
-  .track i { display: block; height: 100%; background: var(--good); }
-  .track i.over { background: var(--bad); }
-  .track i.tight { background: var(--warn); }
-
-  .notes { font-size: 0.82rem; color: var(--faint); margin: 0; padding-left: 1.1rem; display: flex; flex-direction: column; gap: 0.4rem; }
-  .err { border: 1px solid var(--bad); border-left: 4px solid var(--bad); background: var(--raised); padding: 0.85rem 1rem; font-size: 0.9rem; }
-  footer { border-top: 1px solid var(--rule); padding-top: 0.85rem; font-size: 0.75rem; color: var(--faint); }
-  a { color: var(--good); }
-  .months { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 0.5rem 1rem;
-            font-size: 0.85rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.6rem; margin-top: -1.5rem; }
-  .months strong { font-size: 1rem; }
-</style>
+{{template "style"}}
 </head>
 <body>
 <div class="wrap">

@@ -272,3 +272,7 @@ func TestRunCLI(t *testing.T) {
 		t.Errorf("runCLI invalid month exit code = %d, want 1", code)
 	}
 }
+
+func (c *countingClient) GetTransactions(_ context.Context, _ *lunchmoney.TransactionFilters) (*lunchmoney.TransactionsResponse, error) {
+	return &lunchmoney.TransactionsResponse{}, nil
+}
