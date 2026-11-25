@@ -54,7 +54,7 @@ Suggestions come from rules, each with a saving measured against the review mont
 
 ## AI advice
 
-Optional. With a Gemini key, the Generate button sends the plan's aggregates to the model, which picks up to five of the rule-based suggestions and writes a specific action for each. Titles and savings stay the rules' own, so no dollar figure on the page is a model's guess. Spend is kept low by construction:
+Optional, and always through the [LiteLLM](https://docs.litellm.ai/) proxy, which attributes spend to this service's own virtual key. With a key set, the Generate button sends the plan's aggregates to the model, which picks up to five of the rule-based suggestions and writes a specific action for each. Titles and savings stay the rules' own, so no dollar figure on the page is a model's guess. Spend is kept low by construction:
 
 - Viewing never calls the model. `GET /` and `GET /plan` read stored advice; only `POST /advice` (the Generate and Regenerate buttons) and `-cli -ai` generate.
 - One request each time, with thinking off, on `gemini-3.5-flash-lite`. No agent loop and no tool calls. A real month measured 3,320 tokens in and 670 out.
@@ -105,8 +105,9 @@ Cadences normalize to monthly (`weekly` × 52/12, `every 2 weeks` × 26/12, `eve
 | `ACNTNG_PAYCHECK_MATCH` | no | Regular expression matched against an income payee. Defaults to common payroll descriptors (`payroll`, `gusto`, `adp`, `direct deposit`, ...). |
 | `ACNTNG_BASELINE_MONTHS` | no | Months that define normal, 1 to 24. Defaults to `6`. |
 | `ACNTNG_FIXED_CATEGORIES` | no | Comma-separated category names never trimmed, replacing the default list in `plan.go`. Debt categories are always fixed. |
-| `GEMINI_API_KEY`, or `GOOGLE_CLOUD_PROJECT` | no | Turns on AI advice through the Gemini API or Vertex AI. `GOOGLE_GEMINI_BASE_URL` points the former at a proxy. |
-| `ACNTNG_AI_MODEL` | no | Defaults to `gemini-3.5-flash-lite`. |
+| `GEMINI_API_KEY` | no | This service's LiteLLM virtual key. Turns on AI advice. |
+| `GOOGLE_GEMINI_BASE_URL` | with the key | The LiteLLM proxy, e.g. `http://litellm:4000`. The service refuses to start with a key and no proxy, so the key is never sent to Google directly. |
+| `GEMINI_MODEL` | no | Model name as LiteLLM routes it. Defaults to `gemini-3.5-flash-lite`. |
 | `ACNTNG_AI_MAX_CALLS` | no | Model calls allowed per calendar month. Defaults to `4`; `0` serves stored advice only. |
 | `DATABASE_URL` | no | Postgres DSN for stored advice. |
 | `ACNTNG_PAYMENT_OVERRIDES` | no | JSON mapping a loan ID to its monthly payment, e.g. `{"plaid:1001": 1500}`. |

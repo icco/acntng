@@ -117,7 +117,7 @@ func run() int {
 			return 1
 		}
 		if coach == nil {
-			log.Infow("no GEMINI_API_KEY or GOOGLE_CLOUD_PROJECT; suggestions are rule-based only")
+			log.Infow("no GEMINI_API_KEY; suggestions are rule-based only")
 		}
 	}
 
@@ -407,7 +407,7 @@ func planOptionsFromEnv() (PlanOptions, error) {
 // coachFromEnv builds the advice pipeline, or nil when no model is configured.
 func coachFromEnv(ctx context.Context) (*Coach, error) {
 	model := defaultAIModel
-	if raw := os.Getenv("ACNTNG_AI_MODEL"); raw != "" {
+	if raw := os.Getenv("GEMINI_MODEL"); raw != "" {
 		model = raw
 	}
 	adviser, err := NewGeminiAdviser(ctx, model)

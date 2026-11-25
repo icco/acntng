@@ -261,22 +261,24 @@ type GeminiAdviser struct {
 	client *vertex.Client
 }
 
-// NewGeminiAdviser builds an adviser from the environment: GEMINI_API_KEY for
-// the Gemini API, or GOOGLE_CLOUD_PROJECT for Vertex AI. It returns nil when
-// neither is set, which leaves the service on rule-based suggestions.
+// NewGeminiAdviser builds an adviser that reaches Gemini through the LiteLLM
+// proxy: GEMINI_API_KEY is the service's LiteLLM virtual key and
+// GOOGLE_GEMINI_BASE_URL the proxy. It returns nil when no key is set, which
+// leaves the service on rule-based suggestions.
+//
+// A key without a proxy URL is an error rather than a fallback to Google's
+// own endpoint: the key means nothing there, and sending it would leak it.
 func NewGeminiAdviser(ctx context.Context, model string) (*GeminiAdviser, error) {
-	cfg := vertex.Config{Model: model}
-	switch key, project := os.Getenv("GEMINI_API_KEY"), os.Getenv("GOOGLE_CLOUD_PROJECT"); {
-	case key != "":
-		cfg.APIKey = key
-	case project != "":
-		cfg.Project = project
-		cfg.Location = os.Getenv("GOOGLE_CLOUD_LOCATION")
-	default:
+	key := os.Getenv("GEMINI_API_KEY")
+	if key == "" {
 		return nil, nil
 	}
+	baseURL := os.Getenv("GOOGLE_GEMINI_BASE_URL")
+	if baseURL == "" {
+		return nil, errors.New("GEMINI_API_KEY is set without GOOGLE_GEMINI_BASE_URL; point it at the LiteLLM proxy")
+	}
 
-	client, err := vertex.New(ctx, cfg)
+	client, err := vertex.New(ctx, vertex.Config{APIKey: key, BaseURL: baseURL, Model: model})
 	if err != nil {
 		return nil, fmt.Errorf("create gemini client: %w", err)
 	}

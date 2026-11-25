@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -271,4 +273,49 @@ func storeContract(t *testing.T, s AdviceStore) {
 
 func TestMemoryStore(t *testing.T) {
 	storeContract(t, &MemoryStore{})
+}
+
+func TestGeminiAdviserNeedsTheProxy(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GOOGLE_GEMINI_BASE_URL", "")
+	if a, err := NewGeminiAdviser(context.Background(), "m"); a != nil || err != nil {
+		t.Errorf("no key: %v, %v; want advice off", a, err)
+	}
+
+	t.Setenv("GEMINI_API_KEY", "sk-test")
+	if a, err := NewGeminiAdviser(context.Background(), "m"); a != nil || err == nil {
+		t.Errorf("a key with no proxy must be refused, got %v, %v", a, err)
+	}
+}
+
+func TestGeminiAdviserCallsTheProxy(t *testing.T) {
+	var gotPath, gotKey string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath, gotKey = r.URL.Path, r.Header.Get("x-goog-api-key")
+		w.Header().Set("Content-Type", "application/json")
+		answer := `{\"summary\":\"Eat in.\",\"suggestions\":[{\"id\":0,\"action\":\"Cook.\",\"why\":\"It ran over.\"}]}`
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"role":"model","parts":[{"text":"` + answer + `"}]}}],` +
+			`"usageMetadata":{"promptTokenCount":900,"candidatesTokenCount":60}}`))
+	}))
+	defer proxy.Close()
+
+	t.Setenv("GEMINI_API_KEY", "sk-test")
+	t.Setenv("GOOGLE_GEMINI_BASE_URL", proxy.URL)
+	adviser, err := NewGeminiAdviser(context.Background(), "gemini-test")
+	if err != nil || adviser == nil {
+		t.Fatalf("NewGeminiAdviser: %v, %v", adviser, err)
+	}
+
+	p := buildFixturePlan(t, planFixture())
+	a, err := adviser.Advise(context.Background(), p)
+	if err != nil {
+		t.Fatalf("Advise: %v", err)
+	}
+	if !strings.HasSuffix(gotPath, "/models/gemini-test:generateContent") || gotKey != "sk-test" {
+		t.Errorf("proxy saw path %q and key %q", gotPath, gotKey)
+	}
+	if a.Summary != "Eat in." || a.TokensIn != 900 || a.TokensOut != 60 || a.Model != "gemini-test" ||
+		len(a.Suggestions) != 1 || a.Suggestions[0].Title != p.Suggestions[0].Title {
+		t.Errorf("advice = %+v", a)
+	}
 }

@@ -22,7 +22,7 @@ Run via `task <name>`:
 - `main.go` — Server setup, environment, CLI flag dispatch, and HTTP routes.
 - `plan.go` — Paychecks, normal spend and the review month, from transactions.
 - `suggest.go` — Rule-based suggestions and per-category targets. Every figure comes from here, never from a model.
-- `advice.go` — The optional Gemini call and the `Coach` that caps and caches it.
+- `advice.go` — The optional Gemini call, made through the LiteLLM proxy, and the `Coach` that caps and caches it.
 - `store.go` — Advice storage: Postgres via GORM, or memory.
 - `budget.go`, `loans.go` — The older budget and debt reports behind `/dashboard`.
 - `templates/` — HTML templates; `style.html` is shared.
