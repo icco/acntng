@@ -342,7 +342,7 @@ func TestHandleDashboardRendersHTML(t *testing.T) {
 	h := testServer(c, fixedNow(testNow))
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/dashboard", nil))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)
@@ -380,7 +380,7 @@ func TestHandleDashboardSurvivesOneUpstreamFailure(t *testing.T) {
 	h := testServer(c, fixedNow(testNow))
 
 	w := httptest.NewRecorder()
-	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/", nil))
+	h.ServeHTTP(w, httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/dashboard", nil))
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", w.Code)

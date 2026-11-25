@@ -46,7 +46,7 @@ func TestSharedKeyRequiredWhenSet(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		for _, path := range []string{"/", "/loans"} {
+		for _, path := range []string{"/", "/plan", "/dashboard", "/loans"} {
 			req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, path, nil)
 			if tt.set {
 				req.Header.Set(sharedKeyHeader, tt.header)
