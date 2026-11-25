@@ -296,7 +296,7 @@ func TestBuildPlanCutsOnlyToReachTheTarget(t *testing.T) {
 	}
 
 	p = buildFixturePlan(t, planFixture(), planOpts(5000))
-	if p.Totals.Short <= 0 || !strings.Contains(verdict(p), "short of $5,000") || !strings.Contains(verdict(p), "debt payments") {
+	if p.Totals.Short <= 0 || !strings.Contains(verdict(p), "short of your $5,000 target") || !strings.Contains(basis(p), "debt payments") {
 		t.Errorf("an unreachable target should say so: %v, %q", p.Totals, verdict(p))
 	}
 }
@@ -452,7 +452,7 @@ func TestPlanPageRenders(t *testing.T) {
 	}
 	body := w.Body.String()
 	for _, want := range []string{
-		"December 2026", "If nothing changes, December 2026 leaves $2,280.", "What to change",
+		"December 2026", "Make the 5 changes below and December 2026 leaves $2,735.", "With no changes it leaves $2,280.", "What to change",
 		"Bring Restaurants back to $400", "Cancel Old Town Water if it is for the old place",
 		"Use a card with no foreign transaction fees", "Harbor Lettings", "Big Sofa Co", "Lendco", "paid off",
 	} {

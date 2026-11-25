@@ -93,6 +93,7 @@ func viewFuncs() template.FuncMap {
 		},
 		"dollars": signedDollars,
 		"verdict": verdict,
+		"basis":   basis,
 		"first": func(s []string) string {
 			if len(s) == 0 {
 				return ""

@@ -76,7 +76,7 @@ func printPlan(out io.Writer, p *Plan) error {
 	t := p.Totals
 	w := tabwriter.NewWriter(out, 0, 0, 3, ' ', 0)
 
-	fmt.Fprintf(w, "\n=== %s ===\n\n  %s\n", describeMonth(p.PlanFor), verdict(p))
+	fmt.Fprintf(w, "\n=== %s ===\n\n  %s\n  %s\n", describeMonth(p.PlanFor), verdict(p), basis(p))
 
 	fmt.Fprint(w, "\nCHANGES\n")
 	for _, c := range p.Changes {
@@ -130,17 +130,26 @@ func printPlan(out io.Writer, p *Plan) error {
 func verdict(p *Plan) string {
 	t := p.Totals
 	month := describeMonth(p.PlanFor)
-	unchanged := fmt.Sprintf("If nothing changes, %s leaves %s.", month, signedDollars(t.Unchanged))
 	switch {
 	case len(p.Changes) == 0:
-		return unchanged
+		return fmt.Sprintf("%s leaves %s with nothing to change.", month, signedDollars(t.Unchanged))
 	case t.Short > 0:
-		return fmt.Sprintf("%s With every change below it leaves %s, still $%s short of $%s.%s",
-			unchanged, signedDollars(t.Planned), money(t.Short), money(t.Target), billShare(p))
+		return fmt.Sprintf("Even with every change below, %s leaves %s, $%s short of your $%s target.",
+			month, signedDollars(t.Planned), money(t.Short), money(t.Target))
 	default:
-		return fmt.Sprintf("%s Make the %s below and it leaves %s.",
-			unchanged, describeCount(len(p.Changes), "change", "changes"), signedDollars(t.Planned))
+		return fmt.Sprintf("Make the %s below and %s leaves %s.",
+			describeCount(len(p.Changes), "change", "changes"), month, signedDollars(t.Planned))
 	}
+}
+
+// basis is what the verdict rests on.
+func basis(p *Plan) string {
+	t := p.Totals
+	out := fmt.Sprintf("With no changes it leaves %s.", signedDollars(t.Unchanged))
+	if t.Short > 0 {
+		out += billShare(p)
+	}
+	return out
 }
 
 // billShare says how much of the pay bills take, when that is what keeps the

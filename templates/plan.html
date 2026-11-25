@@ -18,6 +18,7 @@
 
   <section class="verdict">
     <p class="big">{{verdict .}}</p>
+    <p class="sub">{{basis .}}</p>
     <div class="flow">
       <div><span>Income</span><b class="num">{{dollars $t.Income}}</b></div>
       <div><span>Bills</span><b class="num">{{dollars (neg $t.Bills)}}</b></div>
